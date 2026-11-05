@@ -152,7 +152,9 @@ await rm(dir, { recursive: true, force: true });
 
 const complete = results.filter((r) => r.asm.done && r.asm.emitted.length === r.pages && r.finals === r.pages);
 const dropped = results.length - complete.length;
+// Per-job latency from upload start to the given timing point.
 const rel = (k: 'accepted' | 'firstEvent' | 'firstPageEvent' | 'firstFinal') => results.filter((r) => r[k] !== undefined).map((r) => r[k]! - r.t0);
+// Change in one mock counter over the run.
 const delta = (lane: string, k: string) => (after && before ? (after[lane]![k] ?? 0) - (before[lane]![k] ?? 0) : NaN);
 
 console.log(`\nLoad benchmark: ${JOBS} jobs, ${TOTAL_PAGES} pages, noise ${NOISE_RPS} rps → ${args.orch}\n`);
