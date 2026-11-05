@@ -1,8 +1,7 @@
-import { TokenBucket, type Clock } from './limiter.js';
+import { TokenBucket } from './limiter.js';
 import { mulberry32, type Rng } from './rng.js';
 
 export type Endpoint = 'layout' | 'vlm';
-export type SpikeMode = '429' | 'slow';
 
 export interface EndpointConfig {
   rps: number;
@@ -12,13 +11,6 @@ export interface EndpointConfig {
   failureRate: number;
   hangRate: number;
   maxInFlight: number;
-}
-
-export interface Spike {
-  mode: SpikeMode;
-  untilMs: number;
-  /** Latency multiplier for mode "slow". */
-  factor: number;
 }
 
 export interface Counters {
@@ -34,7 +26,7 @@ export interface Counters {
 // Fresh set of all-zero counters.
 const zero = (): Counters => ({ total: 0, ok: 0, rateLimited: 0, failed: 0, shed: 0, hung: 0, inFlight: 0 });
 
-// Builds an endpoint's starting config from env vars, falling back to the assignment spec values.
+// Builds an endpoint's config from env vars, falling back to the assignment spec values.
 export function defaultConfig(env: NodeJS.ProcessEnv, kind: Endpoint): EndpointConfig {
   // Reads a numeric env var: default when unset, throws if it is not a number.
   const num = (k: string, d: number) => {
@@ -69,63 +61,28 @@ export function defaultConfig(env: NodeJS.ProcessEnv, kind: Endpoint): EndpointC
   };
 }
 
-/** Live behaviour of one mock endpoint: config, limiter, RNG, active spike, counters. */
+/** Behaviour of one mock endpoint: config, rate limiter, seeded RNG and counters. */
 export class EndpointState {
-  config: EndpointConfig;
-  limiter: TokenBucket;
-  spike: Spike | null = null;
-  counters: Counters = zero();
-  private rng: Rng;
+  readonly limiter: TokenBucket;
+  readonly counters: Counters = zero();
+  private readonly rng: Rng;
 
-  // Sets up the config, token bucket and seeded RNG for one endpoint (layout or vlm).
+  // Sets up the token bucket and seeded RNG for one endpoint (layout or vlm).
   constructor(
     readonly kind: Endpoint,
-    private readonly base: EndpointConfig,
-    private readonly seed: number,
-    private readonly now: Clock = () => performance.now(),
+    readonly config: EndpointConfig,
+    seed: number,
   ) {
-    this.config = { ...base };
-    this.limiter = new TokenBucket(base.rps, base.burst, now);
+    this.limiter = new TokenBucket(config.rps, config.burst);
     this.rng = mulberry32(seed + (kind === 'layout' ? 1 : 2));
   }
 
-  // Returns the current spike, first clearing it if its time window has passed.
-  activeSpike(): Spike | null {
-    if (this.spike && this.now() >= this.spike.untilMs) this.spike = null;
-    return this.spike;
-  }
-
-  // Begins a spike (forced 429s or slowed responses) lasting durationMs.
-  startSpike(mode: SpikeMode, durationMs: number, factor = 5): void {
-    this.spike = { mode, untilMs: this.now() + durationMs, factor };
-  }
-
-  /** Draw one outcome so failure, hang and latency use one deterministic stream. */
+  /** Draw one outcome so hang, failure and latency come from one deterministic stream. */
   draw(): { hang: boolean; fail: boolean; latencyMs: number } {
     const c = this.config;
     const hang = this.rng() < c.hangRate;
     const fail = this.rng() < c.failureRate;
-    let latencyMs = c.latencyMinMs + this.rng() * (c.latencyMaxMs - c.latencyMinMs);
-    const s = this.activeSpike();
-    if (s?.mode === 'slow') latencyMs *= s.factor;
+    const latencyMs = c.latencyMinMs + this.rng() * (c.latencyMaxMs - c.latencyMinMs);
     return { hang, fail, latencyMs: Math.round(latencyMs) };
-  }
-
-  // Applies a partial config change live, rebuilding the limiter if rate or burst changed.
-  update(patch: Partial<EndpointConfig>): void {
-    this.config = { ...this.config, ...patch };
-    if (patch.rps !== undefined || patch.burst !== undefined) {
-      this.limiter = new TokenBucket(this.config.rps, this.config.burst, this.now);
-    }
-  }
-
-  // Restores default config and RNG seed; clears spikes and counters (keeps the in-flight gauge).
-  reset(): void {
-    this.config = { ...this.base };
-    this.limiter = new TokenBucket(this.base.rps, this.base.burst, this.now);
-    this.rng = mulberry32(this.seed + (this.kind === 'layout' ? 1 : 2));
-    this.spike = null;
-    // In-flight requests are still running; keep that gauge, clear the rest.
-    this.counters = { ...zero(), inFlight: this.counters.inFlight };
   }
 }

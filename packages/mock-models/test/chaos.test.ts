@@ -24,16 +24,6 @@ test('latency stays inside the configured window', () => {
   }
 });
 
-test('spike expires and slow-mode multiplies latency', () => {
-  let t = 0;
-  const s = new EndpointState('layout', defaultConfig({}, 'layout'), 1, () => t);
-  s.startSpike('slow', 1000, 4);
-  assert.equal(s.draw().latencyMs, 200);
-  t = 1000;
-  assert.equal(s.activeSpike(), null);
-  assert.equal(s.draw().latencyMs, 50);
-});
-
 test('payloads are deterministic per (document, page)', () => {
   assert.deepEqual(layoutPayload('doc', 3), layoutPayload('doc', 3));
   assert.deepEqual(vlmPayload('doc', 3), vlmPayload('doc', 3));

@@ -1,43 +1,54 @@
-import { timingSafeEqual } from 'node:crypto';
 import { setTimeout as sleep } from 'node:timers/promises';
-import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from 'fastify';
-import { defaultConfig, EndpointState, type Endpoint, type EndpointConfig } from './chaos.js';
+import express, { type Express, type NextFunction, type Request, type Response } from 'express';
+import { defaultConfig, EndpointState, type Endpoint } from './chaos.js';
 import { layoutPayload, vlmPayload } from './payloads.js';
+import { validate, type Rule } from './validate.js';
 
 export interface AppOptions {
   env?: NodeJS.ProcessEnv;
-  logger?: boolean;
 }
 
-const predictSchema = {
-  body: {
-    type: 'object',
-    required: ['document_id', 'page'],
-    properties: {
-      document_id: { type: 'string', minLength: 1, maxLength: 128 },
-      page: { type: 'integer', minimum: 1, maximum: 100000 },
-      image_ref: { type: 'string', maxLength: 512 },
-    },
-    additionalProperties: false,
-  },
-} as const;
+const predictRules: Record<string, Rule> = {
+  document_id: { type: 'string', min: 1, max: 128, required: true },
+  page: { type: 'integer', min: 1, max: 100000, required: true },
+  image_ref: { type: 'string', max: 512 },
+};
 
 interface PredictBody { document_id: string; page: number }
 
-// Creates the Fastify app plus per-endpoint state; separate from server.ts so tests can run it without a port.
-export function buildApp(opts: AppOptions = {}): { app: FastifyInstance; states: Record<Endpoint, EndpointState> } {
+// Creates the Express app plus per-endpoint state; separate from server.ts so tests can run it on any port.
+export function buildApp(opts: AppOptions = {}): { app: Express; states: Record<Endpoint, EndpointState> } {
   const env = opts.env ?? process.env;
   const seed = Number(env.MOCK_SEED ?? 42);
-  const adminToken = env.ADMIN_TOKEN ?? '';
   const states: Record<Endpoint, EndpointState> = {
     layout: new EndpointState('layout', defaultConfig(env, 'layout'), seed),
     vlm: new EndpointState('vlm', defaultConfig(env, 'vlm'), seed),
   };
 
-  const app = Fastify({ logger: opts.logger ?? false, bodyLimit: 16 * 1024 });
+  const app = express();
+  app.disable('x-powered-by');
+  app.set('etag', false);
+  app.use(express.json({ limit: '16kb' }));
+
+  // Optional one-line JSON access log (LOG_REQUESTS=1); off by default so logging I/O never skews benchmarks.
+  if (env.LOG_REQUESTS === '1') {
+    app.use((req, res, next) => {
+      const start = performance.now();
+      res.on('finish', () => {
+        console.log(JSON.stringify({ level: 'info', method: req.method, url: req.originalUrl, status: res.statusCode, ms: Math.round(performance.now() - start) }));
+      });
+      next();
+    });
+  }
 
   // Shared handler for both predict endpoints: shed load, rate-limit, simulate latency and failure, return payload.
-  async function predict(kind: Endpoint, req: FastifyRequest, reply: FastifyReply) {
+  async function predict(kind: Endpoint, req: Request, res: Response): Promise<void> {
+    const err = validate(req.body, predictRules);
+    if (err) {
+      res.status(400).json({ error: 'bad_request', message: err });
+      return;
+    }
+
     const st = states[kind];
     const c = st.counters;
     c.total++;
@@ -45,21 +56,24 @@ export function buildApp(opts: AppOptions = {}): { app: FastifyInstance; states:
     // 1. Protect the mock itself: refuse when too many requests are already running.
     if (c.inFlight >= st.config.maxInFlight) {
       c.shed++;
-      return reply.code(503).header('Retry-After', '1').send({ error: 'overloaded' });
+      res.status(503).set('Retry-After', '1').json({ error: 'overloaded' });
+      return;
     }
 
-    // 2. Forced 429 spike or the normal token bucket. Rejections cost no simulated work.
-    const spike = st.activeSpike();
+    // 2. Token bucket: over the limit means a natural 429. Rejections cost no simulated work.
     const take = st.limiter.tryTake();
-    if (spike?.mode === '429' || !take.ok) {
+    if (!take.ok) {
       c.rateLimited++;
-      const waitMs = spike?.mode === '429' ? Math.max(1, Math.ceil(spike.untilMs - performance.now())) : take.retryAfterMs;
-      return reply
-        .code(429)
-        .header('Retry-After', String(Math.max(1, Math.ceil(waitMs / 1000))))
-        .header('X-RateLimit-Limit', String(st.config.rps))
-        .header('X-RateLimit-Remaining', '0')
-        .send({ error: 'rate_limited', retry_after_ms: waitMs });
+      const waitMs = take.retryAfterMs;
+      res
+        .status(429)
+        .set({
+          'Retry-After': String(Math.max(1, Math.ceil(waitMs / 1000))),
+          'X-RateLimit-Limit': String(st.config.rps),
+          'X-RateLimit-Remaining': '0',
+        })
+        .json({ error: 'rate_limited', retry_after_ms: waitMs });
+      return;
     }
 
     // 3. Accepted: simulate the model doing work.
@@ -68,112 +82,54 @@ export function buildApp(opts: AppOptions = {}): { app: FastifyInstance; states:
       const { hang, fail, latencyMs } = st.draw();
       if (hang) {
         c.hung++;
-        // Never answer; give up only when the client disconnects (tests client timeouts).
-        await new Promise<void>((resolve) => req.raw.once('close', resolve));
-        return reply;
+        // Never answer; give up only when the connection closes (lets clients test their timeouts).
+        await new Promise<void>((resolve) => res.once('close', resolve));
+        return;
       }
       await sleep(latencyMs);
       if (fail) {
         c.failed++;
-        return reply.code(500).send({ error: 'model_failure' });
+        res.status(500).json({ error: 'model_failure' });
+        return;
       }
       c.ok++;
       const { document_id, page } = req.body as PredictBody;
-      reply.header('X-Mock-Latency-Ms', String(latencyMs));
-      return kind === 'layout' ? layoutPayload(document_id, page) : vlmPayload(document_id, page);
+      res.set('X-Mock-Latency-Ms', String(latencyMs));
+      res.json(kind === 'layout' ? layoutPayload(document_id, page) : vlmPayload(document_id, page));
     } finally {
       c.inFlight--;
     }
   }
 
   // Layout model: fast, high-rate endpoint.
-  app.post('/v1/predict/layout', { schema: predictSchema }, (req, reply) => predict('layout', req, reply));
+  app.post('/v1/predict/layout', (req, res) => predict('layout', req, res));
   // VLM model: slow, strictly rate-limited endpoint.
-  app.post('/v1/predict/vlm', { schema: predictSchema }, (req, reply) => predict('vlm', req, reply));
+  app.post('/v1/predict/vlm', (req, res) => predict('vlm', req, res));
 
   // Liveness check used by the Docker healthcheck.
-  app.get('/healthz', async () => ({ ok: true }));
+  app.get('/healthz', (_req, res) => {
+    res.json({ ok: true });
+  });
   // Counters for requests, 429s, failures and in-flight work, for tests and benchmarks.
-  app.get('/metrics-lite', async () => ({ layout: states.layout.counters, vlm: states.vlm.counters }));
+  app.get('/metrics-lite', (_req, res) => {
+    res.json({ layout: states.layout.counters, vlm: states.vlm.counters });
+  });
 
-  // Control plane: guarded by a shared token, compared in constant time.
-  // Groups the /admin routes so the token check applies to all of them.
-  app.register(async (admin) => {
-    // Rejects any /admin request without the correct X-Admin-Token (compared in constant time).
-    admin.addHook('onRequest', async (req, reply) => {
-      const given = Buffer.from(String(req.headers['x-admin-token'] ?? ''));
-      const want = Buffer.from(adminToken);
-      if (!adminToken || given.length !== want.length || !timingSafeEqual(given, want)) {
-        return reply.code(401).send({ error: 'unauthorized' });
-      }
-    });
+  // Unknown routes get a JSON 404 instead of Express's default HTML page.
+  app.use((_req, res) => {
+    res.status(404).json({ error: 'not_found' });
+  });
 
-    // Shows the current config and any active spike for each endpoint.
-    admin.get('/admin/state', async () => ({
-      layout: { config: states.layout.config, spike: states.layout.activeSpike() },
-      vlm: { config: states.vlm.config, spike: states.vlm.activeSpike() },
-    }));
-
-    // Starts a timed spike on one endpoint: force 429s or multiply latency.
-    admin.post<{ Body: { endpoint: Endpoint; durationMs: number; mode: '429' | 'slow'; factor?: number } }>(
-      '/admin/spike',
-      {
-        schema: {
-          body: {
-            type: 'object',
-            required: ['endpoint', 'durationMs', 'mode'],
-            properties: {
-              endpoint: { enum: ['layout', 'vlm'] },
-              durationMs: { type: 'integer', minimum: 1, maximum: 600000 },
-              mode: { enum: ['429', 'slow'] },
-              factor: { type: 'number', minimum: 1, maximum: 50 },
-            },
-            additionalProperties: false,
-          },
-        },
-      },
-      async (req) => {
-        const { endpoint, durationMs, mode, factor } = req.body;
-        states[endpoint].startSpike(mode, durationMs, factor);
-        return { ok: true, spike: states[endpoint].activeSpike() };
-      },
-    );
-
-    // Changes an endpoint's rate, latency or failure settings while running.
-    admin.post<{ Body: { endpoint: Endpoint } & Partial<EndpointConfig> }>(
-      '/admin/config',
-      {
-        schema: {
-          body: {
-            type: 'object',
-            required: ['endpoint'],
-            properties: {
-              endpoint: { enum: ['layout', 'vlm'] },
-              rps: { type: 'number', exclusiveMinimum: 0 },
-              burst: { type: 'number', minimum: 1 },
-              latencyMinMs: { type: 'number', minimum: 0 },
-              latencyMaxMs: { type: 'number', minimum: 0 },
-              failureRate: { type: 'number', minimum: 0, maximum: 1 },
-              hangRate: { type: 'number', minimum: 0, maximum: 1 },
-              maxInFlight: { type: 'integer', minimum: 1 },
-            },
-            additionalProperties: false,
-          },
-        },
-      },
-      async (req) => {
-        const { endpoint, ...patch } = req.body;
-        states[endpoint].update(patch);
-        return { ok: true, config: states[endpoint].config };
-      },
-    );
-
-    // Puts both endpoints back to their default behaviour.
-    admin.post('/admin/reset', async () => {
-      states.layout.reset();
-      states.vlm.reset();
-      return { ok: true };
-    });
+  // Turns body-parser failures (bad JSON, oversize body) into JSON errors; anything else becomes a 500.
+  app.use((err: { type?: string; status?: number }, _req: Request, res: Response, _next: NextFunction) => {
+    if (err.type === 'entity.parse.failed') {
+      res.status(400).json({ error: 'bad_request', message: 'invalid JSON' });
+    } else if (err.type === 'entity.too.large') {
+      res.status(413).json({ error: 'payload_too_large' });
+    } else {
+      console.error(JSON.stringify({ level: 'error', msg: 'unhandled error', err: String(err) }));
+      res.status(500).json({ error: 'internal_error' });
+    }
   });
 
   return { app, states };
