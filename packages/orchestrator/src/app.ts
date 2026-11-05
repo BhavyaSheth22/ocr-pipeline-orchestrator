@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import express, { type Express, type NextFunction, type Request, type Response } from 'express';
 import type { Config } from './config.js';
 import type { Db, JobRow } from './db.js';
+import { evaluate } from './eval/evaluate.js';
 import { countPages, HttpError, paths, receiveUpload } from './ingest.js';
 import { streamEvents, type Notifier } from './stream.js';
 
@@ -112,6 +113,11 @@ export function buildApp({ cfg, db, scheduler, notifier }: AppDeps): Express {
     res.json({ type: 'document', job_id: job.id, children });
   });
 
+  // Evaluation engine. Runs synchronously: bounded by the 1 MB body cap and the TED step budget (~40 ms).
+  app.post('/evaluate', express.json({ limit: '1mb' }), (req, res) => {
+    res.json(evaluate(req.body, cfg.tedMaxSteps));
+  });
+
   // Liveness, used by the compose healthcheck.
   app.get('/healthz', (_req, res) => {
     res.json({ ok: true });
@@ -131,7 +137,7 @@ export function buildApp({ cfg, db, scheduler, notifier }: AppDeps): Express {
     if (err instanceof HttpError) {
       // After a mid-upload 413 the rest of the body is unread, so the connection cannot be reused.
       if (err.status === 413 && !req.complete) res.set('Connection', 'close');
-      res.status(err.status).set(err.headers).json({ error: err.code, message: err.message });
+      res.status(err.status).set(err.headers).json({ error: err.code, message: err.message, ...err.details });
       return;
     }
     const e = err as { type?: string; status?: number };
