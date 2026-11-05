@@ -17,6 +17,7 @@ No global installs: TypeScript, tsx and autocannon are devDependencies, run thro
 | `POST /v1/predict/vlm` | 1500-3000 ms | 10 RPS | 5% (500) |
 
 Body: `{"document_id": "doc1", "page": 1}`. Over the limit returns `429` with `Retry-After`.
+Full request/response models, status codes and curl recipes: [docs/mock-api.md](docs/mock-api.md).
 Responses are deterministic per `(document_id, page)`. Failures are reproducible via `MOCK_SEED`.
 
 ```bash
