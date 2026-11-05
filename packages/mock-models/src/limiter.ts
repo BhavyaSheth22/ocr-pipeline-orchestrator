@@ -17,6 +17,7 @@ export class TokenBucket {
   private tokens: number;
   private last: number;
 
+  // Creates a full bucket that refills at ratePerSec and holds at most capacity tokens.
   constructor(
     readonly ratePerSec: number,
     readonly capacity: number,
@@ -28,6 +29,7 @@ export class TokenBucket {
     this.last = this.now();
   }
 
+  // Adds the tokens earned since the last call, capped at capacity (lazy refill, no timer).
   private refill(): void {
     const t = this.now();
     const elapsedSec = Math.max(0, t - this.last) / 1000;
@@ -35,6 +37,7 @@ export class TokenBucket {
     this.last = t;
   }
 
+  // Spends cost tokens if available, otherwise reports how long until enough exist.
   tryTake(cost = 1): TakeResult {
     this.refill();
     if (this.tokens >= cost) {

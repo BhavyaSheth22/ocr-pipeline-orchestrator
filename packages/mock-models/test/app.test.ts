@@ -4,6 +4,7 @@ import { buildApp } from '../src/app.js';
 
 const env = { ADMIN_TOKEN: 't', MOCK_SEED: '1', LAYOUT_FAILURE_RATE: '0', VLM_FAILURE_RATE: '0' };
 const body = JSON.stringify({ document_id: 'd1', page: 1 });
+// Helper: POST a fixed valid body to a predict endpoint in-process, no network needed.
 const post = (app: ReturnType<typeof buildApp>['app'], url: string) =>
   app.inject({ method: 'POST', url, payload: body, headers: { 'content-type': 'application/json' } });
 

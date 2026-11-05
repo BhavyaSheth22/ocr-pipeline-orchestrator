@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { TokenBucket } from '../src/limiter.js';
 
+// Manual clock so tests control time instead of sleeping.
 function fakeClock() {
   let t = 0;
   return { now: () => t, advance: (ms: number) => { t += ms; } };

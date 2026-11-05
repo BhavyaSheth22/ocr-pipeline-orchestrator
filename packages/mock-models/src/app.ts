@@ -24,6 +24,7 @@ const predictSchema = {
 
 interface PredictBody { document_id: string; page: number }
 
+// Creates the Fastify app plus per-endpoint state; separate from server.ts so tests can run it without a port.
 export function buildApp(opts: AppOptions = {}): { app: FastifyInstance; states: Record<Endpoint, EndpointState> } {
   const env = opts.env ?? process.env;
   const seed = Number(env.MOCK_SEED ?? 42);
@@ -35,6 +36,7 @@ export function buildApp(opts: AppOptions = {}): { app: FastifyInstance; states:
 
   const app = Fastify({ logger: opts.logger ?? false, bodyLimit: 16 * 1024 });
 
+  // Shared handler for both predict endpoints: shed load, rate-limit, simulate latency and failure, return payload.
   async function predict(kind: Endpoint, req: FastifyRequest, reply: FastifyReply) {
     const st = states[kind];
     const c = st.counters;
@@ -84,14 +86,20 @@ export function buildApp(opts: AppOptions = {}): { app: FastifyInstance; states:
     }
   }
 
+  // Layout model: fast, high-rate endpoint.
   app.post('/v1/predict/layout', { schema: predictSchema }, (req, reply) => predict('layout', req, reply));
+  // VLM model: slow, strictly rate-limited endpoint.
   app.post('/v1/predict/vlm', { schema: predictSchema }, (req, reply) => predict('vlm', req, reply));
 
+  // Liveness check used by the Docker healthcheck.
   app.get('/healthz', async () => ({ ok: true }));
+  // Counters for requests, 429s, failures and in-flight work, for tests and benchmarks.
   app.get('/metrics-lite', async () => ({ layout: states.layout.counters, vlm: states.vlm.counters }));
 
   // Control plane: guarded by a shared token, compared in constant time.
+  // Groups the /admin routes so the token check applies to all of them.
   app.register(async (admin) => {
+    // Rejects any /admin request without the correct X-Admin-Token (compared in constant time).
     admin.addHook('onRequest', async (req, reply) => {
       const given = Buffer.from(String(req.headers['x-admin-token'] ?? ''));
       const want = Buffer.from(adminToken);
@@ -100,11 +108,13 @@ export function buildApp(opts: AppOptions = {}): { app: FastifyInstance; states:
       }
     });
 
+    // Shows the current config and any active spike for each endpoint.
     admin.get('/admin/state', async () => ({
       layout: { config: states.layout.config, spike: states.layout.activeSpike() },
       vlm: { config: states.vlm.config, spike: states.vlm.activeSpike() },
     }));
 
+    // Starts a timed spike on one endpoint: force 429s or multiply latency.
     admin.post<{ Body: { endpoint: Endpoint; durationMs: number; mode: '429' | 'slow'; factor?: number } }>(
       '/admin/spike',
       {
@@ -129,6 +139,7 @@ export function buildApp(opts: AppOptions = {}): { app: FastifyInstance; states:
       },
     );
 
+    // Changes an endpoint's rate, latency or failure settings while running.
     admin.post<{ Body: { endpoint: Endpoint } & Partial<EndpointConfig> }>(
       '/admin/config',
       {
@@ -157,6 +168,7 @@ export function buildApp(opts: AppOptions = {}): { app: FastifyInstance; states:
       },
     );
 
+    // Puts both endpoints back to their default behaviour.
     admin.post('/admin/reset', async () => {
       states.layout.reset();
       states.vlm.reset();

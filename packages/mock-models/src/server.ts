@@ -7,6 +7,7 @@ if (!process.env.ADMIN_TOKEN) {
 
 const { app } = buildApp({ logger: true });
 
+// On SIGTERM or SIGINT, stop accepting connections and exit cleanly.
 for (const sig of ['SIGTERM', 'SIGINT'] as const) {
   process.once(sig, () => {
     app.log.info({ sig }, 'shutting down');

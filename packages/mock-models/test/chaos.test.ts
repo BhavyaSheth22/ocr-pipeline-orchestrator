@@ -4,6 +4,7 @@ import { defaultConfig, EndpointState } from '../src/chaos.js';
 import { layoutPayload, vlmPayload } from '../src/payloads.js';
 
 test('seeded failure rate is close to configured rate and reproducible', () => {
+  // Builds two identically seeded VLM states so their outcomes can be compared.
   const mk = () => new EndpointState('vlm', defaultConfig({}, 'vlm'), 7);
   const a = mk(); const b = mk();
   let fails = 0;

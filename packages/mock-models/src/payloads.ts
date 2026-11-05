@@ -12,6 +12,7 @@ const WORDS = ['invoice', 'total', 'amount', 'due', 'date', 'party', 'clause', '
 
 export interface Box { x: number; y: number; w: number; h: number; label: string; confidence: number }
 
+// Builds a fake layout result: 4-12 random boxes plus a top-to-bottom reading order.
 export function layoutPayload(documentId: string, page: number) {
   const r = rngFor(documentId, page, 'layout');
   const n = 4 + Math.floor(r() * 9); // 4..12 regions
@@ -36,9 +37,12 @@ export function layoutPayload(documentId: string, page: number) {
   return { document_id: documentId, page, boxes, reading_order };
 }
 
+// Builds a fake VLM result: some text, one markdown table and a few key-value pairs.
 export function vlmPayload(documentId: string, page: number) {
   const r = rngFor(documentId, page, 'vlm');
+  // Picks a random word from the small vocabulary.
   const word = () => WORDS[Math.floor(r() * WORDS.length)]!;
+  // Joins 6-13 random words into one sentence.
   const sentence = () => Array.from({ length: 6 + Math.floor(r() * 8) }, word).join(' ');
   const text = Array.from({ length: 3 + Math.floor(r() * 4) }, sentence).join('\n');
   const cols = 2 + Math.floor(r() * 3);

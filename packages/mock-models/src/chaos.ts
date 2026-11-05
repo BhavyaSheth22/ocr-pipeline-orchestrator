@@ -31,9 +31,12 @@ export interface Counters {
   inFlight: number;
 }
 
+// Fresh set of all-zero counters.
 const zero = (): Counters => ({ total: 0, ok: 0, rateLimited: 0, failed: 0, shed: 0, hung: 0, inFlight: 0 });
 
+// Builds an endpoint's starting config from env vars, falling back to the assignment spec values.
 export function defaultConfig(env: NodeJS.ProcessEnv, kind: Endpoint): EndpointConfig {
+  // Reads a numeric env var: default when unset, throws if it is not a number.
   const num = (k: string, d: number) => {
     const v = env[k];
     if (v === undefined || v === '') return d;
@@ -74,6 +77,7 @@ export class EndpointState {
   counters: Counters = zero();
   private rng: Rng;
 
+  // Sets up the config, token bucket and seeded RNG for one endpoint (layout or vlm).
   constructor(
     readonly kind: Endpoint,
     private readonly base: EndpointConfig,
@@ -85,11 +89,13 @@ export class EndpointState {
     this.rng = mulberry32(seed + (kind === 'layout' ? 1 : 2));
   }
 
+  // Returns the current spike, first clearing it if its time window has passed.
   activeSpike(): Spike | null {
     if (this.spike && this.now() >= this.spike.untilMs) this.spike = null;
     return this.spike;
   }
 
+  // Begins a spike (forced 429s or slowed responses) lasting durationMs.
   startSpike(mode: SpikeMode, durationMs: number, factor = 5): void {
     this.spike = { mode, untilMs: this.now() + durationMs, factor };
   }
@@ -105,6 +111,7 @@ export class EndpointState {
     return { hang, fail, latencyMs: Math.round(latencyMs) };
   }
 
+  // Applies a partial config change live, rebuilding the limiter if rate or burst changed.
   update(patch: Partial<EndpointConfig>): void {
     this.config = { ...this.config, ...patch };
     if (patch.rps !== undefined || patch.burst !== undefined) {
@@ -112,6 +119,7 @@ export class EndpointState {
     }
   }
 
+  // Restores default config and RNG seed; clears spikes and counters (keeps the in-flight gauge).
   reset(): void {
     this.config = { ...this.base };
     this.limiter = new TokenBucket(this.base.rps, this.base.burst, this.now);

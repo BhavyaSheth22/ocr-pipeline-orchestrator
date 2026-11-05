@@ -1,6 +1,7 @@
 /** mulberry32: tiny seeded PRNG so a run is reproducible from MOCK_SEED. */
 export type Rng = () => number; // [0, 1)
 
+// Returns a function that yields the same sequence of numbers in [0,1) for the same seed.
 export function mulberry32(seed: number): Rng {
   let a = seed >>> 0;
   return () => {
