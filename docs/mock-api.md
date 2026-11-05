@@ -52,17 +52,30 @@ The same `(document_id, page)` always returns the same payload. Failures follow 
 
 A rejected request (400/429/503) costs no simulated latency.
 
+### Idempotency-Key (optional request header)
+Send `Idempotency-Key: <1-255 chars>` to make a predict call safe to repeat (IETF
+`draft-ietf-httpapi-idempotency-key-header`, the Stripe pattern).
+- The first **admitted** call with a key runs the model. A later call with the same key gets the same
+  status, headers and body back, spends no rate-limit token, and adds 1 to `replayed`.
+- A repeat that arrives while the first call is still running waits for it and shares its response.
+- Only admitted calls are remembered: a 400, 429 or 503 stores nothing, so retrying that key runs normally.
+  A 500 is remembered and replayed; send a new key to retry a failed call.
+- Keys live in the mock's memory, per endpoint, oldest evicted after `REPLAY_MAX_KEYS` (10,000). A mock
+  restart forgets them.
+- Empty or over-255-character keys get 400.
+
 ## Utility endpoints
 | Endpoint | Returns |
 |---|---|
 | `GET /healthz` | `{"ok":true}` |
-| `GET /metrics-lite` | Per endpoint: `{total, ok, rateLimited, failed, shed, hung, inFlight}` |
+| `GET /metrics-lite` | Per endpoint: `{total, ok, rateLimited, failed, shed, hung, inFlight, replayed}`. `ok` and `failed` count model runs only, so replays never inflate them |
 
 ## Settings (environment variables, set before starting)
 `PORT`, `MOCK_SEED`, `LAYOUT_RPS`, `VLM_RPS`, `LAYOUT_BURST`, `VLM_BURST`, `LAYOUT_LATENCY_MS`,
 `VLM_LATENCY_MIN_MS`, `VLM_LATENCY_MAX_MS`, `LAYOUT_FAILURE_RATE`, `VLM_FAILURE_RATE`,
 `LAYOUT_HANG_RATE`, `VLM_HANG_RATE` (fraction of requests that never answer), `LAYOUT_MAX_INFLIGHT`,
-`VLM_MAX_INFLIGHT`, `LOG_REQUESTS=1` (one JSON log line per request).
+`VLM_MAX_INFLIGHT`, `REPLAY_MAX_KEYS` (default 10000), `LOG_REQUESTS=1` (one JSON log line per request,
+including the caller's `traceparent` header when sent).
 
 ## Try it
 ```bash
@@ -80,6 +93,11 @@ for i in 1 2 3 4; do curl -s -o /dev/null -w '%{http_code}\n' -X POST localhost:
 
 # 4. Sustained overload on layout: 300 requests/s for 5 s, then look at the counters
 for i in $(seq 1 1500); do curl -s -o /dev/null -X POST localhost:8080/v1/predict/layout -H "$H" -d '{"document_id":"d","page":1}' & sleep 0.003; done; wait
+curl localhost:8080/metrics-lite
+
+# 5. Idempotent replay: the second call returns instantly with the same body; "replayed" goes to 1
+curl -s -X POST localhost:8080/v1/predict/vlm -H "$H" -H 'Idempotency-Key: job1:1:vlm:1' -d '{"document_id":"d","page":1}'
+curl -s -X POST localhost:8080/v1/predict/vlm -H "$H" -H 'Idempotency-Key: job1:1:vlm:1' -d '{"document_id":"d","page":1}'
 curl localhost:8080/metrics-lite
 ```
 Failure and latency behaviour is changed through the environment, for example

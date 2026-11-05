@@ -1,6 +1,6 @@
 import { setTimeout as sleep } from 'node:timers/promises';
 import express, { type Express, type NextFunction, type Request, type Response } from 'express';
-import { defaultConfig, EndpointState, type Endpoint } from './chaos.js';
+import { defaultConfig, EndpointState, type Endpoint, type StoredResponse } from './chaos.js';
 import { layoutPayload, vlmPayload } from './payloads.js';
 import { validate, type Rule } from './validate.js';
 
@@ -35,7 +35,8 @@ export function buildApp(opts: AppOptions = {}): { app: Express; states: Record<
     app.use((req, res, next) => {
       const start = performance.now();
       res.on('finish', () => {
-        console.log(JSON.stringify({ level: 'info', method: req.method, url: req.originalUrl, status: res.statusCode, ms: Math.round(performance.now() - start) }));
+        // traceparent ties this line to the orchestrator's trace; JSON.stringify drops it when the header is absent.
+        console.log(JSON.stringify({ level: 'info', method: req.method, url: req.originalUrl, status: res.statusCode, ms: Math.round(performance.now() - start), traceparent: req.get('traceparent') }));
       });
       next();
     });
@@ -49,9 +50,27 @@ export function buildApp(opts: AppOptions = {}): { app: Express; states: Record<
       return;
     }
 
+    // Optional Idempotency-Key (IETF draft-ietf-httpapi-idempotency-key-header): a repeat gets the first call's response.
+    const key = req.get('Idempotency-Key');
+    if (key !== undefined && (key.length === 0 || key.length > 255)) {
+      res.status(400).json({ error: 'bad_request', message: 'Idempotency-Key must be 1-255 characters' });
+      return;
+    }
+
     const st = states[kind];
     const c = st.counters;
     c.total++;
+
+    // 0. Replay: a known key never re-runs the model and spends no rate-limit token; it joins a call still in flight.
+    const prior = key === undefined ? undefined : st.replays.get(key);
+    if (prior) {
+      c.replayed++;
+      // Stop waiting if this client disconnects, so a replay of a hung call doesn't wait forever.
+      const closed = new Promise<null>((resolve) => res.once('close', () => resolve(null)));
+      const stored = await Promise.race([prior, closed]);
+      if (stored) res.status(stored.status).set(stored.headers).json(stored.body);
+      return;
+    }
 
     // 1. Protect the mock itself: refuse when too many requests are already running.
     if (c.inFlight >= st.config.maxInFlight) {
@@ -82,20 +101,27 @@ export function buildApp(opts: AppOptions = {}): { app: Express; states: Record<
       const { hang, fail, latencyMs } = st.draw();
       if (hang) {
         c.hung++;
+        // A replay of a hung call hangs too, like the real call would; this promise never settles.
+        if (key !== undefined) st.remember(key, new Promise<StoredResponse>(() => {}));
         // Never answer; give up only when the connection closes (lets clients test their timeouts).
         await new Promise<void>((resolve) => res.once('close', resolve));
         return;
       }
-      await sleep(latencyMs);
-      if (fail) {
-        c.failed++;
-        res.status(500).json({ error: 'model_failure' });
-        return;
-      }
-      c.ok++;
       const { document_id, page } = req.body as PredictBody;
-      res.set('X-Mock-Latency-Ms', String(latencyMs));
-      res.json(kind === 'layout' ? layoutPayload(document_id, page) : vlmPayload(document_id, page));
+      // Runs the simulated model once; the promise is stored before it settles so concurrent replays join it.
+      const work = (async (): Promise<StoredResponse> => {
+        await sleep(latencyMs);
+        if (fail) {
+          c.failed++;
+          return { status: 500, headers: {}, body: { error: 'model_failure' } };
+        }
+        c.ok++;
+        const body = kind === 'layout' ? layoutPayload(document_id, page) : vlmPayload(document_id, page);
+        return { status: 200, headers: { 'X-Mock-Latency-Ms': String(latencyMs) }, body };
+      })();
+      if (key !== undefined) st.remember(key, work);
+      const out = await work;
+      res.status(out.status).set(out.headers).json(out.body);
     } finally {
       c.inFlight--;
     }
