@@ -32,6 +32,8 @@ export interface Config {
   resultTtlMs: number;
   breakerThreshold: number;
   breakerOpenMs: number;
+  /** Base of full-jitter backoff after a real failure: random(0, min(8 s, base · 2^attempt)). */
+  backoffBaseMs: number;
   degradedAfterMs: number;
   tedMaxSteps: number;
   lanes: Record<LaneName, LaneConfig>;
@@ -60,6 +62,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     resultTtlMs: num('RESULT_TTL_MS', 60 * 60 * 1000),
     breakerThreshold: 5,
     breakerOpenMs: num('BREAKER_OPEN_MS', 5000),
+    backoffBaseMs: num('BACKOFF_BASE_MS', 250),
     degradedAfterMs: num('DEGRADED_AFTER_MS', 30_000),
     tedMaxSteps: num('TED_MAX_STEPS', 5_000_000),
     lanes: {
