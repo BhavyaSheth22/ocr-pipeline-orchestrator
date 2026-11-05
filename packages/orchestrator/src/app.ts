@@ -6,7 +6,9 @@ import type { Config } from './config.js';
 import type { Db, JobRow } from './db.js';
 import { evaluate } from './eval/evaluate.js';
 import { countPages, HttpError, paths, receiveUpload } from './ingest.js';
+import { log } from './log.js';
 import { streamEvents, type Notifier } from './stream.js';
+import type { Registry } from 'prom-client';
 
 /** What the HTTP layer needs from the scheduler. */
 export interface Scheduler {
@@ -21,6 +23,7 @@ export interface AppDeps {
   db: Db;
   scheduler: Scheduler;
   notifier: Notifier;
+  registry?: Registry;
 }
 
 // Body returned by POST /jobs (also for an Idempotency-Key replay).
@@ -29,7 +32,7 @@ function acceptedBody(job: JobRow, backlogPages: number, etaS: number) {
 }
 
 // Builds the Express app; server.ts owns the process lifecycle, tests call this directly.
-export function buildApp({ cfg, db, scheduler, notifier }: AppDeps): Express {
+export function buildApp({ cfg, db, scheduler, notifier, registry }: AppDeps): Express {
   const app = express();
   app.disable('x-powered-by');
   app.set('etag', false);
@@ -94,6 +97,7 @@ export function buildApp({ cfg, db, scheduler, notifier }: AppDeps): Express {
       }
       throw err;
     }
+    log.info('job accepted', { job_id: id, trace_id: db.getJob(id)!.trace_id, pages, backlog_pages: backlog });
     scheduler.wake();
     res.status(202).json(acceptedBody(db.getJob(id)!, backlog, etaS));
   });
@@ -116,6 +120,12 @@ export function buildApp({ cfg, db, scheduler, notifier }: AppDeps): Express {
   // Evaluation engine. Runs synchronously: bounded by the 1 MB body cap and the TED step budget (~40 ms).
   app.post('/evaluate', express.json({ limit: '1mb' }), (req, res) => {
     res.json(evaluate(req.body, cfg.tedMaxSteps));
+  });
+
+  // Prometheus scrape endpoint.
+  app.get('/metrics', async (_req, res) => {
+    if (!registry) throw new HttpError(404, 'not_found');
+    res.set('content-type', registry.contentType).send(await registry.metrics());
   });
 
   // Liveness, used by the compose healthcheck.

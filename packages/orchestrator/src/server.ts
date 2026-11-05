@@ -6,7 +6,8 @@ import { loadConfig, type Config } from './config.js';
 import { openDb } from './db.js';
 import { cleanOrphans, createSplitter, ensureDirs, removeJobFiles } from './ingest.js';
 import { log } from './log.js';
-import { createScheduler } from './pipeline.js';
+import { createMetrics } from './metrics.js';
+import { createScheduler, type SchedulerHandle } from './pipeline.js';
 import { createNotifier } from './stream.js';
 
 // Boots the orchestrator: db open → recover → clean orphans → lanes start → listen. Returns a stop function.
@@ -18,8 +19,13 @@ export async function startSystem(cfg: Config, port = cfg.port) {
   log.info('boot', { recovered_pages: recovered, orphan_files: orphans });
 
   const notifier = createNotifier();
-  const scheduler = createScheduler({ cfg, db, extract: createSplitter(cfg), notify: (id) => notifier.notify(id) });
-  const app = buildApp({ cfg, db, scheduler, notifier });
+  // Lanes are created after metrics (their counters feed the pipeline), so the gauges read them late-bound.
+  let lanes: SchedulerHandle['lanes'] | undefined;
+  const metrics = createMetrics({ db, notifier, lanes: () => lanes! });
+  metrics.recovered.inc(recovered);
+  const scheduler = createScheduler({ cfg, db, extract: createSplitter(cfg), notify: (id) => notifier.notify(id), events: metrics.events });
+  lanes = scheduler.lanes;
+  const app = buildApp({ cfg, db, scheduler, notifier, registry: metrics.registry });
   scheduler.start();
 
   // Retention: delete finished jobs (rows and files) older than RESULT_TTL_MS. unref'd so it never holds the process.
