@@ -6,7 +6,41 @@ services:
     environment:
       PORT: "8080"
       MOCK_SEED: ${MOCK_SEED:-42}
+      LOG_REQUESTS: ${MOCK_LOG_REQUESTS:-0}
     ports:
       - "8080:8080"
     mem_limit: 256m
     restart: unless-stopped
+
+  orchestrator:
+    build:
+      context: .
+      dockerfile: packages/orchestrator/Dockerfile
+    environment:
+      PORT: "3000"
+      DATA_DIR: /data
+      MODEL_URL: http://mock-models:8080
+    ports:
+      - "3000:3000"
+    volumes:
+      - orchestrator-data:/data
+    mem_limit: 512m
+    depends_on:
+      mock-models:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # One-shot load benchmark: docker compose --profile bench run --rm bench [--noise-rps 8]
+  bench:
+    profiles: ["bench"]
+    build:
+      context: .
+      dockerfile: packages/orchestrator/Dockerfile
+    working_dir: /app/packages/orchestrator
+    entrypoint: ["node", "dist/bench/load.js", "--orch", "http://orchestrator:3000", "--mock", "http://mock-models:8080"]
+    depends_on:
+      orchestrator:
+        condition: service_healthy
+
+volumes:
+  orchestrator-data:

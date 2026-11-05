@@ -8,9 +8,11 @@ import type { Notifier } from './stream.js';
 
 const BREAKER_VALUE = { closed: 0, 'half-open': 1, open: 2 } as const;
 
-// Reads the container's peak memory (includes qpdf children); undefined outside a cgroup v2 container.
+// Reads the container's peak memory (includes qpdf children). Only when the cgroup has a memory limit
+// (a container with mem_limit); without one the file describes the whole host or VM and would mislead.
 function cgroupPeak(): number | undefined {
   try {
+    if (readFileSync('/sys/fs/cgroup/memory.max', 'utf8').trim() === 'max') return undefined;
     return Number(readFileSync('/sys/fs/cgroup/memory.peak', 'utf8').trim());
   } catch {
     return undefined;
