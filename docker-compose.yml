@@ -1,0 +1,13 @@
+services:
+  mock-models:
+    build:
+      context: .
+      dockerfile: packages/mock-models/Dockerfile
+    environment:
+      PORT: "8080"
+      ADMIN_TOKEN: ${ADMIN_TOKEN:-change-me}
+      MOCK_SEED: ${MOCK_SEED:-42}
+    ports:
+      - "8080:8080"
+    mem_limit: 256m
+    restart: unless-stopped
