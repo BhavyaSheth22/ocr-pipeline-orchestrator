@@ -6,6 +6,7 @@ import { Readable } from 'node:stream';
 import { buildApp } from '../src/app.js';
 import { openDb } from '../src/db.js';
 import { createSplitter, ensureDirs, paths } from '../src/ingest.js';
+import { createNotifier } from '../src/stream.js';
 import { makePdf } from '../bench/make-pdf.js';
 import { cleanup, hasQpdf, testConfig, withServer } from './helpers.js';
 
@@ -17,7 +18,7 @@ async function setup(env: Record<string, string> = {}) {
   await ensureDirs(cfg);
   const db = openDb(':memory:');
   const wakes = { n: 0 };
-  const app = buildApp({ cfg, db, scheduler: { wake: () => void wakes.n++, vlmRate: () => 10 } });
+  const app = buildApp({ cfg, db, scheduler: { wake: () => void wakes.n++, vlmRate: () => 10 }, notifier: createNotifier() });
   return { cfg, db, app, wakes };
 }
 

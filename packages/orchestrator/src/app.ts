@@ -5,6 +5,7 @@ import express, { type Express, type NextFunction, type Request, type Response }
 import type { Config } from './config.js';
 import type { Db, JobRow } from './db.js';
 import { countPages, HttpError, paths, receiveUpload } from './ingest.js';
+import { streamEvents, type Notifier } from './stream.js';
 
 /** What the HTTP layer needs from the scheduler. */
 export interface Scheduler {
@@ -18,6 +19,7 @@ export interface AppDeps {
   cfg: Config;
   db: Db;
   scheduler: Scheduler;
+  notifier: Notifier;
 }
 
 // Body returned by POST /jobs (also for an Idempotency-Key replay).
@@ -26,7 +28,7 @@ function acceptedBody(job: JobRow, backlogPages: number, etaS: number) {
 }
 
 // Builds the Express app; server.ts owns the process lifecycle, tests call this directly.
-export function buildApp({ cfg, db, scheduler }: AppDeps): Express {
+export function buildApp({ cfg, db, scheduler, notifier }: AppDeps): Express {
   const app = express();
   app.disable('x-powered-by');
   app.set('etag', false);
@@ -93,6 +95,21 @@ export function buildApp({ cfg, db, scheduler }: AppDeps): Express {
     }
     scheduler.wake();
     res.status(202).json(acceptedBody(db.getJob(id)!, backlog, etaS));
+  });
+
+  // SSE stream of the job's events, resumable with Last-Event-ID.
+  app.get('/jobs/:id/events', (req, res) => streamEvents(req, res, db, notifier));
+
+  // The assembled document tree, once every page is final.
+  app.get('/jobs/:id/result', (req, res) => {
+    const job = db.getJob(req.params.id);
+    if (!job) throw new HttpError(404, 'not_found');
+    if (job.state !== 'done') throw new HttpError(409, 'not_ready', `job is still running (${job.watermark - 1}/${job.total_pages} pages in order)`);
+    const children = db.finals(job.id).map((r) => {
+      const d = JSON.parse(r.data) as { result: object; status: string; source: string | null; low_confidence: boolean };
+      return { ...d.result, page: r.page, status: d.status, source: d.source, low_confidence: d.low_confidence };
+    });
+    res.json({ type: 'document', job_id: job.id, children });
   });
 
   // Liveness, used by the compose healthcheck.

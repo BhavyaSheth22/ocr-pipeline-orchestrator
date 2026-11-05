@@ -7,6 +7,7 @@ import { openDb } from './db.js';
 import { cleanOrphans, createSplitter, ensureDirs, removeJobFiles } from './ingest.js';
 import { log } from './log.js';
 import { createScheduler } from './pipeline.js';
+import { createNotifier } from './stream.js';
 
 // Boots the orchestrator: db open → recover → clean orphans → lanes start → listen. Returns a stop function.
 export async function startSystem(cfg: Config, port = cfg.port) {
@@ -16,8 +17,9 @@ export async function startSystem(cfg: Config, port = cfg.port) {
   const orphans = await cleanOrphans(cfg, (id) => db.getJob(id) !== undefined);
   log.info('boot', { recovered_pages: recovered, orphan_files: orphans });
 
-  const scheduler = createScheduler({ cfg, db, extract: createSplitter(cfg), notify: () => {} });
-  const app = buildApp({ cfg, db, scheduler });
+  const notifier = createNotifier();
+  const scheduler = createScheduler({ cfg, db, extract: createSplitter(cfg), notify: (id) => notifier.notify(id) });
+  const app = buildApp({ cfg, db, scheduler, notifier });
   scheduler.start();
 
   // Retention: delete finished jobs (rows and files) older than RESULT_TTL_MS. unref'd so it never holds the process.
@@ -44,7 +46,7 @@ export async function startSystem(cfg: Config, port = cfg.port) {
     db.close();
   }
 
-  return { cfg, db, scheduler, server, stop, port: (server.address() as { port: number }).port };
+  return { cfg, db, scheduler, notifier, server, stop, port: (server.address() as { port: number }).port };
 }
 
 export type System = Awaited<ReturnType<typeof startSystem>>;
