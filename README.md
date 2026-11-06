@@ -38,12 +38,21 @@ No global installs: TypeScript, tsx, @types/express and autocannon are devDepend
 The orchestrator needs **qpdf** on the machine (`sudo apt install qpdf`; the Docker image has it).
 
 ```bash
-npm test                                         # mock + orchestrator tests (qpdf tests skip without qpdf)
+npm test                                         # mock + orchestrator tests (17 qpdf tests skip without qpdf)
 npm run dev -w @ocr/mock-models                  # mock on :8080
 MODEL_URL=http://127.0.0.1:8080 npm run dev -w @ocr/orchestrator     # orchestrator on :3000
 npm run bench:load -w @ocr/orchestrator -- --orch http://127.0.0.1:3000 --mock http://127.0.0.1:8080
 npm run bench:ted -w @ocr/orchestrator           # TED p50/p99 on 1,000 random 50-node pairs
 ```
+
+No qpdf locally? Run the full orchestrator suite (all 60 tests, crash test included) in a throwaway
+container. It reuses this checkout's `node_modules`, so it needs a Linux x64 host (WSL works):
+```bash
+docker run --rm -v "$PWD":/app:ro -w /app/packages/orchestrator -e QPDF_BIN=/usr/bin/qpdf node:22-bookworm-slim \
+  sh -c 'apt-get update -qq && apt-get install -y -qq qpdf >/dev/null && node --import tsx --test test/*.test.ts'
+```
+The orchestrator's Docker build image can't run these tests: it doesn't contain `packages/mock-models`,
+which the pipeline and crash tests start.
 
 ## Mock model server
 | Endpoint | Latency | Limit | Failure |
