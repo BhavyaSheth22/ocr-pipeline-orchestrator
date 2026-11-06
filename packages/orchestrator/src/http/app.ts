@@ -5,6 +5,7 @@ import { evaluate } from '../eval/evaluate.js';
 import { createJobService, type Scheduler } from '../services/job-service.js';
 import type { Db } from '../storage/db.js';
 import { HttpError } from './errors.js';
+import type { ErrorResponse, EvaluateRequest, EvaluateResponse, HealthResponse, JobAccepted, JobResultResponse } from './types.js';
 import { streamEvents, type Notifier } from './stream.js';
 
 export type { Scheduler };
@@ -26,7 +27,7 @@ export function buildApp({ cfg, db, scheduler, notifier, registry }: AppDeps): E
   const jobs = createJobService({ cfg, db, scheduler });
 
   // Create a job from the raw PDF body; see JobService.submit for the admission and commit steps.
-  app.post('/jobs', async (req: Request, res: Response) => {
+  app.post('/jobs', async (req: Request, res: Response<JobAccepted>) => {
     res.status(202).json(await jobs.submit(req, req.get('Idempotency-Key') ?? null));
   });
 
@@ -34,12 +35,12 @@ export function buildApp({ cfg, db, scheduler, notifier, registry }: AppDeps): E
   app.get('/jobs/:id/events', (req, res) => streamEvents(req, res, db, notifier));
 
   // The assembled document tree, once every page is final.
-  app.get('/jobs/:id/result', (req, res) => {
+  app.get('/jobs/:id/result', (req: Request<{ id: string }>, res: Response<JobResultResponse>) => {
     res.json(jobs.result(req.params.id));
   });
 
   // Evaluation engine. Runs synchronously: bounded by the 1 MB body cap and the TED step budget (~40 ms).
-  app.post('/evaluate', express.json({ limit: '1mb' }), (req, res) => {
+  app.post('/evaluate', express.json({ limit: '1mb' }), (req: Request<object, EvaluateResponse, EvaluateRequest>, res: Response<EvaluateResponse>) => {
     res.json(evaluate(req.body, cfg.tedMaxSteps));
   });
 
@@ -50,17 +51,17 @@ export function buildApp({ cfg, db, scheduler, notifier, registry }: AppDeps): E
   });
 
   // Liveness, used by the compose healthcheck.
-  app.get('/healthz', (_req, res) => {
+  app.get('/healthz', (_req, res: Response<HealthResponse>) => {
     res.json({ ok: true });
   });
 
   // Unknown routes get a JSON 404.
-  app.use((_req, res) => {
+  app.use((_req, res: Response<ErrorResponse>) => {
     res.status(404).json({ error: 'not_found' });
   });
 
   // Maps HttpError (and body-parser errors) to JSON; anything else is a logged 500.
-  app.use((err: unknown, req: Request, res: Response, _next: NextFunction) => {
+  app.use((err: unknown, req: Request, res: Response<ErrorResponse>, _next: NextFunction) => {
     if (res.headersSent) {
       res.destroy();
       return;

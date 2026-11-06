@@ -1,4 +1,5 @@
 import { HttpError } from '../http/errors.js';
+import type { EvaluateResponse } from '../http/types.js';
 import { codePoints, editDistance, normalize, wordIds } from './edit-distance.js';
 import { greedyMatch } from './iou.js';
 import { treeEditDistance } from './ted.js';
@@ -11,7 +12,7 @@ import { parseTree } from './tree.js';
 const ratio = (num: number, den: number) => (den > 0 ? num / den : num === 0 ? 0 : 1);
 
 // Runs every metric; throws 413 before any TED work when the step budget would be exceeded.
-export function evaluate(body: unknown, tedMaxSteps: number) {
+export function evaluate(body: unknown, tedMaxSteps: number): EvaluateResponse {
   const t0 = performance.now();
   if (typeof body !== 'object' || body === null) throw new HttpError(400, 'bad_request', 'body must be {prediction, ground_truth}');
   const { prediction, ground_truth } = body as Record<string, unknown>;

@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import type { Readable } from 'node:stream';
 import type { Config } from '../config.js';
 import { HttpError } from '../http/errors.js';
+import type { JobAccepted, JobResultResponse, PageFinalEventData, ResultPage } from '../http/types.js';
 import { receiveUpload } from '../http/upload.js';
 import { log } from '../observability/log.js';
 import { countPages } from '../pdf/pdf.js';
@@ -16,15 +17,6 @@ export interface Scheduler {
   wake(): void;
   /** Current adaptive VLM rate in pages/s, the throughput bottleneck used for ETAs. */
   vlmRate(): number;
-}
-
-/** Body returned by POST /jobs (also for an Idempotency-Key replay). */
-export interface JobAccepted {
-  job_id: string;
-  events_url: string;
-  total_pages: number;
-  backlog_pages: number;
-  eta_s: number;
 }
 
 export type UploadRequest = Readable & { headers: Record<string, unknown> };
@@ -98,12 +90,12 @@ export function createJobService({ cfg, db, scheduler }: { cfg: Config; db: Db; 
     },
 
     // The assembled document tree, once every page is final.
-    result(id: string) {
+    result(id: string): JobResultResponse {
       const job = db.getJob(id);
       if (!job) throw new HttpError(404, 'not_found');
       if (job.state !== 'done') throw new HttpError(409, 'not_ready', `job is still running (${job.watermark - 1}/${job.total_pages} pages in order)`);
-      const children = db.finals(job.id).map((r) => {
-        const d = JSON.parse(r.data) as { result: object; status: string; source: string | null; low_confidence: boolean };
+      const children = db.finals(job.id).map((r): ResultPage => {
+        const d = JSON.parse(r.data) as PageFinalEventData;
         return { ...d.result, page: r.page, status: d.status, source: d.source, low_confidence: d.low_confidence };
       });
       return { type: 'document', job_id: job.id, children };
