@@ -2,11 +2,11 @@
 
 One Node.js process (API, scheduler, SSE) in front of two rate-limited model endpoints, with SQLite as the
 queue, result store and event log. Under `docker compose` every scored target is met except TTFP. TTFP is
-met for a single job (32–38 ms) but missed when 50 uploads arrive at the same instant (p50 368–408 ms);
-see "Reading TTFP".
+met for a single job (32–38 ms). With 50 uploads at the same instant it is now near the target at p50
+(158–270 ms) but still missed at p99 (305–473 ms); see "Reading TTFP".
 
 ```
-client ── POST /jobs (raw PDF, streamed) ──▶ ingest: stream→disk (byte cap) → qpdf page count (worker thread) → 1 SQLite tx
+client ── POST /jobs (raw PDF, streamed) ──▶ ingest: stream→disk (byte cap) → page count (in-process, qpdf fallback) → 1 SQLite tx
    ▲                                                      │
    │  GET /jobs/:id/events (SSE, Last-Event-ID)           ▼
    │                                   SQLite (WAL): jobs · pages (state machine) · events (append-only log)
@@ -26,30 +26,41 @@ cold start. Rows marked † come from an earlier run with every process native o
 
 | Metric | Target | Result |
 |---|---|---|
-| Peak memory | < 500 MB | **98 MB** container peak (cgroup, qpdf children included). Process RSS 133 MB, of which ~63 MB is the Node binary's shared, file-backed pages |
+| Peak memory | < 500 MB | **89–94 MB** container peak (cgroup, qpdf children included). Process RSS 126–130 MB, which includes the Node binary's shared, file-backed pages |
 | Zero drop | 0 unhandled failures | **50/50 jobs, 1,000/1,000 pages**. 47 VLM and 22 layout 500s retried; 0 fallbacks |
 | Zero drop with real 429s † | | `--noise-rps 6` (another client spending the VLM quota): **55 × 429, 20/20 jobs, 0 fallbacks** |
 | TED latency, 50 nodes † | < 100 ms | **p50 0.10 ms, p99 0.18 ms**; worst-case 50-node shape 1.5 ms; HTTP round trip p99 4.9 ms |
-| TTFP (POST start → first SSE chunk), 50 jobs at once | < 200 ms | **Missed: p50 368 ms, p99 396 ms** (408 / 439 ms on a warm server) |
+| TTFP (POST start → first SSE chunk), 50 jobs at once | < 200 ms | **p50 158–270 ms; missed at p99: 305–473 ms** (4 runs; the previous build measured p50 370–418, p99 392–445 ms in the same session, see below) |
 | TTFP, one job | < 200 ms | **32–38 ms** |
-| First *page* event, 50 jobs (reported) | | p50 673 ms, p99 948 ms |
+| First *page* event, 50 jobs (reported) | | p50 512–699 ms, p99 790–914 ms |
 | Client reorder buffer | ≤ window (32) | max 2 pages |
 | Wall time, 1,000 pages | | 110 s (≈ 9.1 pages/s against the 10/s VLM limit) |
 
 **Reading TTFP.** The first SSE chunk is the `job` header event. It is committed with the job, so it is
 there the moment the stream opens, and a single job sees it in 32–38 ms. The miss happens only when 50
-uploads land at the same instant, because they queue on one event loop. A CPU profile of that burst found the
-main thread busy for 902 of the first 1,000 ms. Two changes cut that to 677 ms and TTFP p50 from about
-510 ms to 370–410 ms:
+uploads land at the same instant, because they queue on one event loop. Changes so far, in order:
 
-- **qpdf runs from worker threads.** Each spawn costs about 3 ms of synchronous work on the calling thread,
-  and 80 spawns had taken 231 ms of the event loop.
-- **Boot warms up** `fetch` and the qpdf workers.
+- **qpdf runs from worker threads**, and boot warms up `fetch` and the workers. A CPU profile had found
+  the main thread busy for 902 of the first 1,000 ms; this cut it to 677 ms (TTFP p50 ~510 → 370–410 ms).
+- **Page count in-process** (see Key decisions). Timing each upload showed every upload's own work was
+  ~30 ms, but all 50 qpdf page counts came back in one clump ~150 ms into the burst. Each of the two
+  workers forks ~25 qpdf processes back to back and can't post a result until its spawn loop ends. More
+  workers made it worse (p50 303 ms), because more simultaneous forks compete for CPU.
+- **Uploads written straight to their final path**, so there is no rename through the 4-thread libuv pool.
+- **Debian (glibc) runtime instead of Alpine.** Creating a 20-page job in SQLite takes 1.17 ms on musl
+  and 0.46 ms on glibc, and it runs on the event loop once per upload.
 
-What remains is many small per-request costs: SQLite 157 ms (about 1.2 ms per job creation), model
-fetches 116 ms, upload streaming 115 ms, Express 63 ms, GC 33 ms. On top of that, each upload waits for its
-page count, which takes 70–200 ms when 50 qpdf processes start at once. Closing the rest takes more than one
-process (see Scale-out path).
+Docker Desktop's speed drifts across a day (the same image measured p99 152–187 ms in the morning and
+300–337 ms in the afternoon). So the previous build and this one were compared interleaved: base,
+branch, base, branch, 4 runs each, cold every time.
+
+| Build | TTFP p50 | TTFP p99 |
+|---|---|---|
+| Previous (qpdf count, Alpine) | 370–418 ms | 392–445 ms |
+| Current | 158–270 ms | 305–473 ms |
+
+p50 roughly halves. p99 doesn't move reliably: in each run a few uploads still wait 300–460 ms for their
+202 while the median waits ~150 ms. That tail is the next thing to explain (Known limitations).
 
 The first *page* event can't beat about 500 ms for the 50th job, because 50 page-ones at the spec's 100 RPS
 layout limit take 500 ms. We report it separately rather than hide it.
@@ -66,10 +77,21 @@ still needs a store for results and the event log), RabbitMQ (two stores, two co
 an in-memory queue (fails crash recovery).
 
 **Ingestion streams to disk, then random-access.** A PDF can't be split in one forward pass because the
-xref is at the end. The body is piped through a byte counter to `data/tmp`, so a 100 MB upload grows the
-heap by under 40 MB (tested). qpdf, outside the V8 heap, counts pages; each page is extracted lazily by
-the layout task (temp name, then rename; at most 4 qpdf processes at once). Model calls carry `image_ref`,
-never bytes (claim-check pattern).
+xref is at the end. The body is piped through a byte counter straight to `data/jobs/<id>.pdf`, so a 100 MB
+upload grows the heap by under 40 MB (tested). Until the job row commits, that file is an orphan that boot
+cleanup deletes, so there is no temp-then-rename step. Each page is extracted lazily by the layout task
+(temp name, then rename; at most 4 qpdf processes at once). Model calls carry `image_ref`, never bytes
+(claim-check pattern).
+
+**Page count in-process, qpdf as the fallback** (`pdf/page-count.ts`). The reader follows `startxref` →
+xref chain (tables, xref streams, hybrid files, incremental updates) → `/Root` → `/Pages` → `/Count`, and
+reads object streams (Flate, PNG predictors). It makes a few small preads, ~50 µs per upload, with no fork.
+Anything it doesn't fully handle returns null and goes to qpdf, which also decides whether the file is
+a PDF at all (422). That covers encryption, other filters, offsets that don't match their object number,
+and oversized structures. Tests check it against `qpdf --show-npages` on qpdf-written files (object
+streams, linearized, QDF). Like pdf.js, it trusts the root `/Count`. A file whose `/Count` lies gets its
+extra pages failed at extraction, not dropped. Before this change, 50 simultaneous uploads meant 50 qpdf
+forks on two worker threads, and the page counts came back in one clump ~150 ms into the burst.
 
 **qpdf from a two-worker thread pool.** Spawning a child process is synchronous work on the calling thread,
 so qpdf is started from worker threads, keeping the event loop free. Thread safety:
@@ -150,10 +172,13 @@ orchestrators respect one quota. Ingestion moves to an object store, and the cla
 
 - If a SQLite write throws mid-pipeline (disk full), that page stays `running` until the next restart
   recovers it.
-- TTFP misses the target when 50 uploads arrive at the same instant (above). Next steps, in order:
-  1. more qpdf workers, to shorten the page-count wait;
-  2. find out why one job insert takes about 1.2 ms;
+- TTFP misses the target at p99 when 50 uploads arrive at the same instant (above). Next steps, in order:
+  1. explain the tail: a few uploads per run wait 300–460 ms for their 202 while the median waits ~150 ms.
+     In an earlier timing run, connections were accepted late, at 170–220 ms, behind bursts of completions
+     handled in one event-loop turn;
+  2. let ingestion run ahead of layout dispatch while uploads are arriving (first-page latency is reported,
+     not scored);
   3. move ingestion into its own process.
-- qpdf is still run once per upload and once per page. Batching extraction per claim window would cut
-  the process count.
+- qpdf still runs once per page (and once per upload when the in-process reader declines the file).
+  Batching extraction per claim window would cut the process count.
 - Multi-page TIFF and images are out of scope. The same pipeline applies with a different splitter.
