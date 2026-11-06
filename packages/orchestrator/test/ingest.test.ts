@@ -45,7 +45,7 @@ test('a PDF upload creates a job with one row per page and wakes the scheduler',
     assert.equal(body.eta_s, 1);
     assert.equal(body.events_url, `/jobs/${body.job_id}/events`);
     assert.ok(existsSync(paths.job(cfg, body.job_id)));
-    assert.deepEqual(readdirSync(paths.tmp(cfg)), [], 'temp file renamed away');
+    assert.deepEqual(readdirSync(join(cfg.dataDir, 'jobs')), [`${body.job_id}.pdf`]);
     assert.equal(db.getJob(body.job_id)!.total_pages, 3);
     assert.equal(wakes.n, 1);
   });
@@ -61,7 +61,6 @@ test('non-PDF bodies get 422 and leave no files behind', { skip }, async () => {
     const empty = await fetch(`${url}/jobs`, { method: 'POST' });
     assert.equal(empty.status, 422);
   });
-  assert.deepEqual(readdirSync(paths.tmp(cfg)), []);
   assert.deepEqual(readdirSync(join(cfg.dataDir, 'jobs')), []);
   cleanup(cfg);
 });
@@ -87,7 +86,7 @@ test('declared Content-Length over the cap gets an early 413', async () => {
   cleanup(cfg);
 });
 
-test('a chunked body that crosses the cap mid-stream gets 413 and no temp file', async () => {
+test('a chunked body that crosses the cap mid-stream gets 413 and leaves no file', async () => {
   const { cfg, app } = await setup({ MAX_UPLOAD_BYTES: '1000' });
   await withServer(app, async (url) => {
     const res = await fetch(`${url}/jobs`, {
@@ -97,7 +96,7 @@ test('a chunked body that crosses the cap mid-stream gets 413 and no temp file',
     } as RequestInit);
     assert.equal(res.status, 413);
   });
-  assert.deepEqual(readdirSync(paths.tmp(cfg)), []);
+  assert.deepEqual(readdirSync(join(cfg.dataDir, 'jobs')), []);
   cleanup(cfg);
 });
 

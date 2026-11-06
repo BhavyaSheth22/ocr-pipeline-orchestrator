@@ -1,6 +1,5 @@
 import { randomBytes, randomUUID } from 'node:crypto';
-import { rename, rm } from 'node:fs/promises';
-import { join } from 'node:path';
+import { rm } from 'node:fs/promises';
 import type { Readable } from 'node:stream';
 import type { Config } from '../config.js';
 import { HttpError } from '../http/errors.js';
@@ -51,18 +50,18 @@ export function createJobService({ cfg, db, scheduler }: { cfg: Config; db: Db; 
         throw new HttpError(503, 'backlog_full', 'queue is full, retry later', { 'Retry-After': String(retryAfter) });
       }
 
+      // The upload goes straight to its final path: no rename on the hot path. Until the job row commits the
+      // file is an orphan, which boot cleanup deletes after a crash (cleanOrphans).
       const id = randomUUID();
-      const tmp = join(paths.tmp(cfg), id);
-      await receiveUpload(req, tmp, cfg.maxUploadBytes);
+      const pdfPath = paths.job(cfg, id);
+      await receiveUpload(req, pdfPath, cfg.maxUploadBytes);
       let pages: number;
       try {
-        pages = await countPages(cfg, tmp);
+        pages = await countPages(cfg, pdfPath);
       } catch (err) {
-        await rm(tmp, { force: true });
+        await rm(pdfPath, { force: true });
         throw err;
       }
-      const pdfPath = paths.job(cfg, id);
-      await rename(tmp, pdfPath);
 
       const backlog = db.backlogPages() + pages;
       const etaS = etaFor(backlog);

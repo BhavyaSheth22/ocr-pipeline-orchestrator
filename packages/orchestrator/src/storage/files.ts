@@ -4,9 +4,7 @@ import type { Config } from '../config.js';
 
 // Directory layout under DATA_DIR.
 export const paths = {
-  // Uploads land here first, so a crash mid-upload leaves only a temp file.
-  tmp: (cfg: Config) => join(cfg.dataDir, 'tmp'),
-  // Accepted source PDFs.
+  // Source PDFs. Uploads stream straight here; a file without a job row is an orphan (see cleanOrphans).
   job: (cfg: Config, id: string) => join(cfg.dataDir, 'jobs', `${id}.pdf`),
   // Per-job directory of extracted single-page PDFs.
   pages: (cfg: Config, id: string) => join(cfg.dataDir, 'pages', id),
@@ -16,16 +14,12 @@ export const paths = {
 
 // Creates the data directories (idempotent).
 export async function ensureDirs(cfg: Config): Promise<void> {
-  for (const d of ['tmp', 'jobs', 'pages']) await mkdir(join(cfg.dataDir, d), { recursive: true });
+  for (const d of ['jobs', 'pages']) await mkdir(join(cfg.dataDir, d), { recursive: true });
 }
 
-// Boot cleanup: half-written uploads and source files whose job row never committed are deleted.
+// Boot cleanup: source files whose job row never committed (half-written or rejected mid-crash) are deleted.
 export async function cleanOrphans(cfg: Config, jobExists: (id: string) => boolean): Promise<number> {
   let removed = 0;
-  for (const f of await readdir(paths.tmp(cfg))) {
-    await rm(join(paths.tmp(cfg), f), { force: true, recursive: true });
-    removed++;
-  }
   for (const f of await readdir(join(cfg.dataDir, 'jobs'))) {
     const id = f.replace(/\.pdf$/, '');
     if (!jobExists(id)) {
