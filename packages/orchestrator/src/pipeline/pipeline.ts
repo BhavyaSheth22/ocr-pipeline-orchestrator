@@ -1,11 +1,12 @@
 import { randomBytes } from 'node:crypto';
 import { rm } from 'node:fs/promises';
 import { CircuitBreaker } from './breaker.js';
-import type { Config, LaneName } from './config.js';
-import type { Db, FinalPage, JobRow, Task } from './db.js';
-import { paths, removeJobFiles, type ExtractPage } from './ingest.js';
+import type { Config, LaneName } from '../config.js';
+import type { Db, FinalPage, JobRow, Task } from '../storage/db.js';
+import { paths, removeJobFiles } from '../storage/files.js';
+import { type ExtractPage } from '../pdf/pdf.js';
 import { Lane } from './lane.js';
-import { log, withLogContext } from './log.js';
+import { log, withLogContext } from '../observability/log.js';
 import { callModel, type Outcome } from './model-client.js';
 import { AdaptiveTokenBucket } from './token-bucket.js';
 

@@ -1,4 +1,4 @@
-import { HttpError } from '../ingest.js';
+import { HttpError } from '../http/errors.js';
 
 // One iterative pass per input tree: validates it and builds everything the metrics need. An explicit stack
 // (no recursion) means a deep tree cannot overflow the call stack.

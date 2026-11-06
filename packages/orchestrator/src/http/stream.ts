@@ -1,6 +1,6 @@
 import { once } from 'node:events';
 import type { Request, Response } from 'express';
-import type { Db } from './db.js';
+import type { Db } from '../storage/db.js';
 
 // SSE fan-out with O(1) memory per client: the event log lives in SQLite and each connection keeps only a
 // cursor (like a Kafka consumer offset). Replay after reconnect and live delivery are the same loop.

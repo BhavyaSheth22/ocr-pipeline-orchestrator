@@ -1,5 +1,5 @@
 import Database from 'better-sqlite3';
-import type { LaneName } from './config.js';
+import type { LaneName } from '../config.js';
 
 // SQLite is the queue, the result store and the SSE event log. Every state change, its result and its
 // event commit in one transaction, guarded by the state the caller expects, so a stale outcome is a no-op.

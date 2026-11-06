@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { openDb, type Db } from '../src/db.js';
+import { openDb, type Db } from '../src/storage/db.js';
 
 // Creates a job with n pages in the given db.
 function addJob(db: Db, id: string, pages: number, window = 32, idemKey: string | null = null): void {

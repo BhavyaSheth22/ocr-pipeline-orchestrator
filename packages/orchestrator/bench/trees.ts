@@ -1,4 +1,4 @@
-import type { TreeNode } from '../src/pipeline.js';
+import type { TreeNode } from '../src/pipeline/pipeline.js';
 
 const BLOCKS = ['title', 'paragraph', 'table', 'figure', 'key_value', 'footer'];
 const WORDS = ['invoice', 'total', 'amount', 'due', 'date', 'party', 'clause', 'patient', 'value'];

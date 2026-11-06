@@ -1,4 +1,4 @@
-import { HttpError } from '../ingest.js';
+import { HttpError } from '../http/errors.js';
 import { codePoints, editDistance, normalize, wordIds } from './edit-distance.js';
 import { greedyMatch } from './iou.js';
 import { treeEditDistance } from './ted.js';

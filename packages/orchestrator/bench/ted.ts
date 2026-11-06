@@ -1,10 +1,10 @@
 // TED latency benchmark: p50/p99 over 1,000 random 50-node document tree pairs, in-process and over HTTP,
 // plus the worst-case comb shape. Run: npm run bench:ted -w @ocr/orchestrator
-import { buildApp } from '../src/app.js';
+import { buildApp } from '../src/http/app.js';
 import { loadConfig } from '../src/config.js';
-import { openDb } from '../src/db.js';
+import { openDb } from '../src/storage/db.js';
 import { evaluate } from '../src/eval/evaluate.js';
-import { createNotifier } from '../src/stream.js';
+import { createNotifier } from '../src/http/stream.js';
 import { combTree, docTree, rng } from './trees.js';
 
 const N = Number(process.env.TED_PAIRS ?? 1000);

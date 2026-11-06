@@ -57,7 +57,7 @@ client ────────────────────────�
    ▲  GET /jobs/:id/events (SSE, Last-Event-ID)   │
    │                                              ▼
    │   ┌──────────────────── orchestrator (one Node process) ─────────────────────┐
-   │   │  ingest.ts: stream→disk (byte cap) → qpdf --show-npages → 1 SQLite tx       │
+   │   │  job-service: stream→disk (byte cap) → qpdf --show-npages → 1 SQLite tx  │
    │   │                                                                          │
    │   │  SQLite (WAL)  jobs · pages (state machine) · events (append-only log)    │
    │   │        ▲ claim (UPDATE…RETURNING)          │ commit + notify(jobId)       │
@@ -65,7 +65,7 @@ client ────────────────────────�
    │   │  Lane "layout"  bucket 100 rps · in-flight ≤ 16 · breaker                │
    │   │  Lane "vlm"     bucket  10 rps · in-flight ≤ 32 · breaker  (bulkheads)    │
    │   │        │ fetch + Idempotency-Key + traceparent                           │
-   │   │  stream.ts: per-client cursor → read events > cursor → res.write/drain   │
+   │   │  http/stream.ts: per-client cursor → events > cursor → write/drain       │
    └───┼──────────────────────────────────────────────────────────────────────────┘
        │                              │
        └──────────────────────────────┼──► mock-models  /v1/predict/layout · /v1/predict/vlm
@@ -550,19 +550,31 @@ packages/
   mock-models/                 existing; + Idempotency-Key replay (~25 lines), + traceparent in access log
   orchestrator/
     src/
-      server.ts                boot: db open → recover → lanes start → listen; SIGTERM drain   (~50)
-      app.ts                   Express routes, error handler                                   (~120)
-      config.ts                env → typed config, spec defaults                               (~40)
-      db.ts                    schema, pragmas, prepared statements, claim/complete/recover tx (~180)
-      ingest.ts                stream-to-disk w/ cap, qpdf count + per-page extract            (~90)
-      lane.ts                  dispatcher loop, in-flight bound, wake/notify                   (~110)
-      token-bucket.ts          AdaptiveTokenBucket (lazy refill + AIMD + pause)                (~60)
-      breaker.ts               CircuitBreaker                                                  (~40)
-      pipeline.ts              layout/vlm handlers, outcome classification, backoff, fallback  (~120)
-      model-client.ts          fetch, timeout, Idempotency-Key, traceparent, body drain        (~50)
-      stream.ts                SSE cursor loop                                                 (~80)
-      log.ts                   JSON logger + AsyncLocalStorage                                 (~25)
-      metrics.ts               prom-client registry                                            (~50)
+      server.ts                boot: db open → recover → lanes start → listen; SIGTERM drain   (~90)
+      config.ts                env → typed config, spec defaults                               (~90)
+      http/
+        app.ts                 Express routes (thin), 404 and error handler                    (~60)
+        errors.ts              HttpError                                                       (~15)
+        upload.ts              stream-to-disk with a byte cap                                  (~35)
+        stream.ts              SSE notifier + cursor loop                                      (~115)
+      services/
+        job-service.ts         POST /jobs use-case (idempotency, backpressure, commit), result (~120)
+      storage/
+        db.ts                  schema, pragmas, prepared statements, claim/complete/recover tx (~230)
+        files.ts               data-dir layout, boot orphan cleanup, per-job file removal      (~40)
+      pdf/
+        pdf.ts                 qpdf page count + per-page extract (bounded concurrency)        (~90)
+        qpdf-pool.ts           worker-thread pool that runs qpdf off the event loop            (~130)
+        qpdf-worker.ts         worker entry                                                    (~20)
+      pipeline/
+        pipeline.ts            layout/vlm handlers, outcome classification, backoff, fallback  (~210)
+        lane.ts                dispatcher loop, in-flight bound, wake/notify                   (~120)
+        token-bucket.ts        AdaptiveTokenBucket (lazy refill + AIMD + pause)                (~70)
+        breaker.ts             CircuitBreaker                                                  (~70)
+        model-client.ts        fetch, timeout, Idempotency-Key, traceparent, body drain        (~50)
+      observability/
+        log.ts                 JSON logger + AsyncLocalStorage                                 (~30)
+        metrics.ts             prom-client registry                                            (~100)
       eval/{tree,ted,edit-distance,iou,evaluate}.ts                                            (~250)
     test/                      node:test, tsx (same as mock)
     Dockerfile                 node:22-alpine + qpdf
@@ -595,10 +607,10 @@ ARCHITECTURE.md                2–3 pages, condensed from this plan
 | # | Phase | Done when |
 |---|---|---|
 | P0 | Mock: Idempotency-Key replay + traceparent log | Mock tests pass, plus a replay test |
-| P1 | `db.ts` + state machine + recovery (+ `db.test.ts`) | Claim, complete and recover are proven in-memory |
-| P2 | `ingest.ts` + `POST /jobs` (qpdf) | A 100 MB PDF upload keeps heap flat; 413/422 paths |
+| P1 | `storage/db.ts` + state machine + recovery (+ `db.test.ts`) | Claim, complete and recover are proven in-memory |
+| P2 | `services/job-service.ts` + `pdf/pdf.ts` + `POST /jobs` (qpdf) | A 100 MB PDF upload keeps heap flat; 413/422 paths |
 | P3 | `token-bucket`, `breaker`, `model-client`, `pipeline`, `lane` | 1 job flows to done against the mock; metrics move |
-| P4 | `stream.ts` + `/events` + `/result` | Out-of-order pages assemble; resume works |
+| P4 | `http/stream.ts` + `/events` + `/result` | Out-of-order pages assemble; resume works |
 | P5 | `eval/*` + `POST /evaluate` | Golden tests; `bench/ted.ts` p99 ≪ 100 ms |
 | P6 | `log.ts`, `metrics.ts`, trace propagation | One trace id visible in both services' logs |
 | P7 | Dockerfile, compose, `bench/load.ts`, `crash.test.ts` | `docker compose up` clean; bench meets all four targets |

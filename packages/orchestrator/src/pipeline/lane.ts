@@ -1,8 +1,8 @@
 import { setTimeout as sleep } from 'node:timers/promises';
 import type { CircuitBreaker } from './breaker.js';
-import type { LaneConfig, LaneName } from './config.js';
-import type { Db, Task } from './db.js';
-import { log } from './log.js';
+import type { LaneConfig, LaneName } from '../config.js';
+import type { Db, Task } from '../storage/db.js';
+import { log } from '../observability/log.js';
 import type { AdaptiveTokenBucket } from './token-bucket.js';
 
 export interface LaneHandler {

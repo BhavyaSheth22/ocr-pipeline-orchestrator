@@ -44,7 +44,7 @@ test('log lines carry the AsyncLocalStorage context through awaits', async () =>
   // Runs the logger in a child process so its stdout can be read without touching the test reporter's stdout.
   const { execFileSync } = await import('node:child_process');
   const { fileURLToPath } = await import('node:url');
-  const logModule = fileURLToPath(new URL('../src/log.ts', import.meta.url));
+  const logModule = fileURLToPath(new URL('../src/observability/log.ts', import.meta.url));
   const code = `
     const { log, withLogContext } = await import(${JSON.stringify(logModule)});
     await withLogContext({ trace_id: 'abc', job_id: 'j1' }, async () => {

@@ -12,7 +12,7 @@ client ── POST /jobs (raw PDF, streamed) ──▶ ingest: stream→disk (by
    │                                   SQLite (WAL): jobs · pages (state machine) · events (append-only log)
    │                                      ▲ claim (UPDATE…RETURNING)       │ commit + notify(job)
    │                                      │                                 ▼
-   └── stream.ts: cursor per client   Lane "layout": AIMD bucket ≤100 rps · ≤16 in flight · breaker
+   └── http/stream.ts: cursor per client Lane "layout": AIMD bucket ≤100 rps · ≤16 in flight · breaker
        (read log after cursor,        Lane "vlm":    AIMD bucket ≤10 rps  · ≤32 in flight · breaker
         write, await drain)                │ fetch + Idempotency-Key + traceparent
                                            ▼

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { createQpdfPool, QpdfError } from '../src/qpdf-pool.js';
+import { createQpdfPool, QpdfError } from '../src/pdf/qpdf-pool.js';
 
 // The pool runs any binary; tests use node itself so they need no qpdf.
 const NODE = process.execPath;

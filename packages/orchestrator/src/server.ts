@@ -1,15 +1,16 @@
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import type { Server } from 'node:http';
-import { buildApp } from './app.js';
+import { buildApp } from './http/app.js';
 import { loadConfig, type Config } from './config.js';
-import { openDb } from './db.js';
-import { cleanOrphans, createSplitter, ensureDirs, removeJobFiles } from './ingest.js';
-import { log } from './log.js';
-import { createMetrics } from './metrics.js';
-import { createScheduler, type SchedulerHandle } from './pipeline.js';
-import { qpdf } from './qpdf-pool.js';
-import { createNotifier } from './stream.js';
+import { openDb } from './storage/db.js';
+import { cleanOrphans, ensureDirs, removeJobFiles } from './storage/files.js';
+import { createSplitter } from './pdf/pdf.js';
+import { log } from './observability/log.js';
+import { createMetrics } from './observability/metrics.js';
+import { createScheduler, type SchedulerHandle } from './pipeline/pipeline.js';
+import { qpdf } from './pdf/qpdf-pool.js';
+import { createNotifier } from './http/stream.js';
 
 // Pays one-time start-up costs at boot instead of during the first upload burst (profiled: ~170 ms of
 // lazy module loading and ~3 ms per qpdf spawn landed on the event loop mid-burst). Failures only log:

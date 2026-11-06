@@ -3,10 +3,11 @@ import assert from 'node:assert/strict';
 import { createReadStream, existsSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { Readable } from 'node:stream';
-import { buildApp } from '../src/app.js';
-import { openDb } from '../src/db.js';
-import { createSplitter, ensureDirs, paths } from '../src/ingest.js';
-import { createNotifier } from '../src/stream.js';
+import { buildApp } from '../src/http/app.js';
+import { openDb } from '../src/storage/db.js';
+import { createSplitter } from '../src/pdf/pdf.js';
+import { ensureDirs, paths } from '../src/storage/files.js';
+import { createNotifier } from '../src/http/stream.js';
 import { makePdf } from '../bench/make-pdf.js';
 import { cleanup, hasQpdf, testConfig, withServer } from './helpers.js';
 

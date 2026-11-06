@@ -1,13 +1,13 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { buildApp } from '../src/app.js';
-import { openDb } from '../src/db.js';
+import { buildApp } from '../src/http/app.js';
+import { openDb } from '../src/storage/db.js';
 import { codePoints, editDistance, wordIds } from '../src/eval/edit-distance.js';
 import { evaluate } from '../src/eval/evaluate.js';
 import { greedyMatch, iou } from '../src/eval/iou.js';
 import { treeEditDistance } from '../src/eval/ted.js';
 import { parseTree } from '../src/eval/tree.js';
-import { createNotifier } from '../src/stream.js';
+import { createNotifier } from '../src/http/stream.js';
 import { combTree, docTree, rng } from '../bench/trees.js';
 import { testConfig, withServer } from './helpers.js';
 

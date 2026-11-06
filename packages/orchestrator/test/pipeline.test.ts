@@ -4,7 +4,7 @@ import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { readFile } from 'node:fs/promises';
 import { makePdf } from '../bench/make-pdf.js';
-import { paths } from '../src/ingest.js';
+import { paths } from '../src/storage/files.js';
 import { startSystem, type System } from '../src/server.js';
 import { cleanup, hasQpdf, startMock, testConfig, waitFor } from './helpers.js';
 

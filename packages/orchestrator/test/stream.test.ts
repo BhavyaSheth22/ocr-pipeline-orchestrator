@@ -4,9 +4,9 @@ import { join } from 'node:path';
 import { readFile } from 'node:fs/promises';
 import { Assembler, readSse } from '../bench/sse-client.js';
 import { makePdf } from '../bench/make-pdf.js';
-import { openDb } from '../src/db.js';
+import { openDb } from '../src/storage/db.js';
 import { startSystem } from '../src/server.js';
-import { createNotifier } from '../src/stream.js';
+import { createNotifier } from '../src/http/stream.js';
 import { cleanup, hasQpdf, startMock, testConfig } from './helpers.js';
 
 const skip = hasQpdf ? false : 'qpdf not available (set QPDF_BIN)';
@@ -112,7 +112,7 @@ test('events after a job completes replay from the log and the stream ends', asy
   db.advanceToVlm('j', 1, null, null);
   db.claim('vlm', 0);
   db.finalize('vlm', 'j', 1, { status: 'ok', source: 'vlm', low_confidence: false, result: {} });
-  const { buildApp } = await import('../src/app.js');
+  const { buildApp } = await import('../src/http/app.js');
   const cfg = testConfig();
   const app = buildApp({ cfg, db, scheduler: { wake() {}, vlmRate: () => 10 }, notifier: createNotifier() });
   const { withServer } = await import('./helpers.js');

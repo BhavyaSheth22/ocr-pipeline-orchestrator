@@ -1,10 +1,10 @@
 import { readFileSync } from 'node:fs';
 import client from 'prom-client';
-import type { LaneName } from './config.js';
-import type { Db } from './db.js';
-import type { PipelineEvents } from './pipeline.js';
-import type { Lane } from './lane.js';
-import type { Notifier } from './stream.js';
+import type { LaneName } from '../config.js';
+import type { Db } from '../storage/db.js';
+import type { PipelineEvents } from '../pipeline/pipeline.js';
+import type { Lane } from '../pipeline/lane.js';
+import type { Notifier } from '../http/stream.js';
 
 const BREAKER_VALUE = { closed: 0, 'half-open': 1, open: 2 } as const;
 

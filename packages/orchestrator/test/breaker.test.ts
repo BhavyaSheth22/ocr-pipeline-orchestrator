@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { CircuitBreaker } from '../src/breaker.js';
+import { CircuitBreaker } from '../src/pipeline/breaker.js';
 
 // A breaker (threshold 3, open 1 s) with a hand-driven clock.
 function mk() {

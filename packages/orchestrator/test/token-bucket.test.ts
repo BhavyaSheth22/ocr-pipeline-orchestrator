@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { AdaptiveTokenBucket } from '../src/token-bucket.js';
+import { AdaptiveTokenBucket } from '../src/pipeline/token-bucket.js';
 
 // A bucket with a hand-driven clock.
 function mk(min = 1, max = 10, ceiling = 1000) {

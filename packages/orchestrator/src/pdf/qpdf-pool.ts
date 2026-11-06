@@ -14,7 +14,7 @@
 import { extname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Worker } from 'node:worker_threads';
-import { log } from './log.js';
+import { log } from '../observability/log.js';
 
 export interface QpdfTask {
   id: number;
