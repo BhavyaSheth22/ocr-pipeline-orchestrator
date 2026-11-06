@@ -8,9 +8,23 @@ import { cleanOrphans, createSplitter, ensureDirs, removeJobFiles } from './inge
 import { log } from './log.js';
 import { createMetrics } from './metrics.js';
 import { createScheduler, type SchedulerHandle } from './pipeline.js';
+import { qpdf } from './qpdf-pool.js';
 import { createNotifier } from './stream.js';
 
-// Boots the orchestrator: db open → recover → clean orphans → lanes start → listen. Returns a stop function.
+// Pays one-time start-up costs at boot instead of during the first upload burst (profiled: ~170 ms of
+// lazy module loading and ~3 ms per qpdf spawn landed on the event loop mid-burst). Failures only log:
+// the model server or qpdf may come up later, and the normal paths retry.
+async function warmUp(cfg: Config): Promise<void> {
+  // The first fetch() loads undici; this one also opens a keep-alive connection to the model server.
+  await fetch(`${cfg.modelUrl}/healthz`, { signal: AbortSignal.timeout(2000) }).then(
+    (res) => res.body?.cancel(),
+    (err: unknown) => log.warn('warm-up: model server not reachable', { err: String(err) }),
+  );
+  // Starts the qpdf worker threads and runs qpdf once on each.
+  await qpdf.warm(cfg.qpdfBin).catch((err: unknown) => log.warn('warm-up: qpdf not available', { err: String(err) }));
+}
+
+// Boots the orchestrator: db open → recover → clean orphans → warm up → lanes start → listen. Returns a stop function.
 export async function startSystem(cfg: Config, port = cfg.port) {
   await ensureDirs(cfg);
   const db = openDb(join(cfg.dataDir, 'orchestrator.db'));
@@ -26,6 +40,7 @@ export async function startSystem(cfg: Config, port = cfg.port) {
   const scheduler = createScheduler({ cfg, db, extract: createSplitter(cfg), notify: (id) => notifier.notify(id), events: metrics.events });
   lanes = scheduler.lanes;
   const app = buildApp({ cfg, db, scheduler, notifier, registry: metrics.registry });
+  await warmUp(cfg);
   scheduler.start();
 
   // Retention: delete finished jobs (rows and files) older than RESULT_TTL_MS. unref'd so it never holds the process.
@@ -49,6 +64,7 @@ export async function startSystem(cfg: Config, port = cfg.port) {
     await scheduler.stop();
     server.closeAllConnections();
     await closed;
+    await qpdf.close(); // after the scheduler drained, so no extraction is still waiting on a worker
     db.close();
   }
 

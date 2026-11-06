@@ -1,13 +1,10 @@
-import { execFile } from 'node:child_process';
 import { createWriteStream } from 'node:fs';
 import { mkdir, readdir, rename, rm, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { pipeline } from 'node:stream/promises';
-import { promisify } from 'node:util';
 import type { Readable } from 'node:stream';
 import type { Config } from './config.js';
-
-const run = promisify(execFile);
+import { qpdf } from './qpdf-pool.js';
 
 /** An error that maps straight to an HTTP response. */
 export class HttpError extends Error {
@@ -96,14 +93,18 @@ function qpdfOk(err: unknown): boolean {
   return (err as { code?: number }).code === 3;
 }
 
-// Reads the page count with qpdf (it seeks to the xref, so cost does not grow with file size).
+// Reads the page count with qpdf (it seeks to the xref, so cost does not grow with file size). Runs on a
+// qpdf worker thread, so the spawn does not block the event loop.
 export async function countPages(cfg: Config, file: string): Promise<number> {
   let stdout: string;
   try {
-    ({ stdout } = await run(cfg.qpdfBin, ['--show-npages', file]));
+    stdout = await qpdf.run(cfg.qpdfBin, ['--show-npages', file]);
   } catch (err) {
     if (!qpdfOk(err)) {
-      if ((err as { code?: string }).code === 'ENOENT') throw new Error(`qpdf not found at "${cfg.qpdfBin}"`);
+      const code = (err as { code?: unknown }).code;
+      if (code === 'ENOENT') throw new Error(`qpdf not found at "${cfg.qpdfBin}"`);
+      // No exit code means qpdf never ran (spawn or worker failure): a server error, not a bad PDF.
+      if (typeof code !== 'number') throw err;
       throw new HttpError(422, 'not_a_pdf', 'qpdf could not read the file');
     }
     stdout = (err as { stdout: string }).stdout;
@@ -115,6 +116,7 @@ export async function countPages(cfg: Config, file: string): Promise<number> {
 }
 
 // Builds the page extractor: at most `splitConcurrency` qpdf processes at once, so child memory is bounded.
+// The slot counter is main-thread state only; the qpdf process itself is started from a worker thread.
 export function createSplitter(cfg: Config) {
   let active = 0;
   const waiting: (() => void)[] = [];
@@ -140,7 +142,7 @@ export function createSplitter(cfg: Config) {
       await mkdir(paths.pages(cfg, jobId), { recursive: true });
       const tmp = `${dest}.${process.pid}.${Math.random().toString(36).slice(2)}.tmp`;
       try {
-        await run(cfg.qpdfBin, [src, '--pages', '.', String(n), '--', tmp]);
+        await qpdf.run(cfg.qpdfBin, [src, '--pages', '.', String(n), '--', tmp]);
       } catch (err) {
         if (!qpdfOk(err)) {
           await rm(tmp, { force: true });
