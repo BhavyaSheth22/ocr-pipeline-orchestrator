@@ -51,6 +51,25 @@ container. It reuses this checkout's `node_modules`, so it needs a Linux x64 hos
 docker run --rm -v "$PWD":/app:ro -w /app/packages/orchestrator -e QPDF_BIN=/usr/bin/qpdf node:22-bookworm-slim \
   sh -c 'apt-get update -qq && apt-get install -y -qq qpdf >/dev/null && node --import tsx --test test/*.test.ts'
 ```
+**Clean-room run (no host `node_modules`)**: copies the checkout into the container, installs `qpdf` and
+the build tools, runs `npm ci` there (so `better-sqlite3` is compiled for the container's Node 22, not the host's),
+then runs all 60 tests with none skipped. Use this when the host Node is not 22 (`better-sqlite3` segfaults
+under Node 18) or the host `node_modules` was built for another platform:
+```bash
+docker run --rm -v "$PWD":/src:ro node:22-alpine sh -c '
+  set -e
+  apk add --no-cache python3 make g++ qpdf >/dev/null
+  mkdir /app && cd /src && tar --exclude=node_modules --exclude=dist --exclude=.git --exclude=data -cf - . | tar -xf - -C /app
+  cd /app && npm ci --silent
+  cd packages/orchestrator && npm test'
+```
+If `docker` fails with `permission denied ... /var/run/docker.sock`, the user is not in the `docker` group. Without
+re-logging in, wrap the command in `sg docker -c "..."` (escape inner `$` and quotes), or fix it permanently with
+`sudo usermod -aG docker $USER` and a new shell.
+
+Known flake: `stream.test.ts` "reconnecting with Last-Event-ID" occasionally fails with `duplicates` `[6]` instead of
+`[5]` under full-suite load (events 5 and 6 can arrive in one chunk before the client abort lands). It passes alone.
+
 The orchestrator's Docker build image can't run these tests: it doesn't contain `packages/mock-models`,
 which the pipeline and crash tests start.
 
