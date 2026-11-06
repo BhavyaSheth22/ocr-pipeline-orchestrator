@@ -1,6 +1,7 @@
 import { mkdir, rename, rm, stat } from 'node:fs/promises';
 import type { Config } from '../config.js';
 import { paths } from '../storage/files.js';
+import { readPageCount } from './page-count.js';
 import { qpdf } from './qpdf-pool.js';
 import { HttpError } from '../http/errors.js';
 
@@ -9,9 +10,18 @@ function qpdfOk(err: unknown): boolean {
   return (err as { code?: number }).code === 3;
 }
 
+// Page count for an upload. The in-process reader answers for well-formed files without a fork; anything it
+// does not fully understand goes to qpdf, which also decides whether the file is a PDF at all (422).
+export async function countPages(cfg: Config, file: string): Promise<number> {
+  const n = readPageCount(file) ?? (await qpdfPageCount(cfg, file));
+  if (n < 1) throw new HttpError(422, 'not_a_pdf', 'no pages');
+  if (n > cfg.maxPages) throw new HttpError(422, 'too_many_pages', `${n} pages, max ${cfg.maxPages}`);
+  return n;
+}
+
 // Reads the page count with qpdf (it seeks to the xref, so cost does not grow with file size). Runs on a
 // qpdf worker thread, so the spawn does not block the event loop.
-export async function countPages(cfg: Config, file: string): Promise<number> {
+async function qpdfPageCount(cfg: Config, file: string): Promise<number> {
   let stdout: string;
   try {
     stdout = await qpdf.run(cfg.qpdfBin, ['--show-npages', file]);
@@ -26,8 +36,7 @@ export async function countPages(cfg: Config, file: string): Promise<number> {
     stdout = (err as { stdout: string }).stdout;
   }
   const n = Number.parseInt(stdout.trim(), 10);
-  if (!Number.isInteger(n) || n < 1) throw new HttpError(422, 'not_a_pdf', 'no pages');
-  if (n > cfg.maxPages) throw new HttpError(422, 'too_many_pages', `${n} pages, max ${cfg.maxPages}`);
+  if (!Number.isInteger(n)) throw new HttpError(422, 'not_a_pdf', 'no pages');
   return n;
 }
 
