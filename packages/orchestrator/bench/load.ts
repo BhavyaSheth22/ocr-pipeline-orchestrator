@@ -4,9 +4,11 @@
 //
 //   npm run bench:load -w @ocr/orchestrator -- --orch http://127.0.0.1:3000 --mock http://127.0.0.1:8080
 //   options: --jobs 50 --pages 1000 --noise-rps 8 (spends the mock's VLM quota from outside → real 429 spikes)
+import { randomUUID } from 'node:crypto';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { monitorEventLoopDelay } from 'node:perf_hooks';
 import { parseArgs } from 'node:util';
 import { makePdf } from './make-pdf.js';
 import { Assembler, readSse } from './sse-client.js';
@@ -20,6 +22,8 @@ const { values: args } = parseArgs({
     'noise-rps': { type: 'string', default: '0' },
   },
 });
+// Unique per run: in Docker the bench is always PID 1, so a pid-based key replayed the previous run's jobs.
+const RUN_ID = randomUUID();
 const JOBS = Number(args.jobs);
 const TOTAL_PAGES = Number(args.pages);
 const NOISE_RPS = Number(args['noise-rps']);
@@ -71,7 +75,11 @@ for (let i = 0; i < JOBS; i++) {
 // Memory sampler: max RSS and container peak seen on /metrics.
 let peakRss = 0;
 let peakCgroup = 0;
+let peakLoopLag = 0;
 let samplerOn = true;
+// The bench's own event-loop delay, so a slow client is not mistaken for a slow server.
+const clientLoop = monitorEventLoopDelay({ resolution: 10 });
+clientLoop.enable();
 // Samples /metrics every 200 ms until stopped.
 const sampler = (async () => {
   while (samplerOn) {
@@ -79,6 +87,7 @@ const sampler = (async () => {
       const text = await (await fetch(`${args.orch}/metrics`)).text();
       peakRss = Math.max(peakRss, sample(text, 'process_resident_memory_bytes'));
       peakCgroup = Math.max(peakCgroup, sample(text, 'container_memory_peak_bytes'));
+      peakLoopLag = Math.max(peakLoopLag, sample(text, 'nodejs_eventloop_lag_max_seconds') * 1000);
     } catch {
       // orchestrator busy or restarting: skip this sample
     }
@@ -112,7 +121,7 @@ async function runJob(i: number): Promise<JobStats> {
     let res: Response;
     // Admission may answer 503 + Retry-After when the backlog is full; honour it and retry.
     for (;;) {
-      res = await fetch(`${args.orch}/jobs`, { method: 'POST', headers: { 'content-type': 'application/pdf', 'idempotency-key': `bench-${process.pid}-${i}` }, body: pdfs.get(pages)! });
+      res = await fetch(`${args.orch}/jobs`, { method: 'POST', headers: { 'content-type': 'application/pdf', 'idempotency-key': `bench-${RUN_ID}-${i}` }, body: pdfs.get(pages)! });
       if (res.status !== 503) break;
       await new Promise((r) => setTimeout(r, Number(res.headers.get('retry-after') ?? 1) * 1000));
     }
@@ -160,8 +169,9 @@ const delta = (lane: string, k: string) => (after && before ? (after[lane]![k] ?
 console.log(`\nLoad benchmark: ${JOBS} jobs, ${TOTAL_PAGES} pages, noise ${NOISE_RPS} rps → ${args.orch}\n`);
 console.log('| Metric | Result | Target |');
 console.log('|---|---|---|');
-console.log(`| Peak RSS (orchestrator process) | ${mb(peakRss)} | < 500 MB |`);
+console.log(`| Peak RSS (orchestrator process; includes shared file-backed pages of the Node binary) | ${mb(peakRss)} | < 500 MB |`);
 console.log(`| Peak container memory (cgroup, incl. qpdf) | ${mb(peakCgroup)} | < 500 MB |`);
+console.log(`| Max event-loop lag: orchestrator / bench client | ${fmt(peakLoopLag)} / ${fmt(clientLoop.max / 1e6)} | (diagnostic) |`);
 console.log(`| Jobs completed with every page | ${complete.length} / ${JOBS} | ${JOBS} / ${JOBS} |`);
 console.log(`| Pages failed / low-confidence fallback | ${results.reduce((a, r) => a + r.failed, 0)} / ${results.reduce((a, r) => a + r.lowConfidence, 0)} | handled, not dropped |`);
 console.log(`| Upload accepted (202) p50 / p99 / max | ${fmt(pct(rel('accepted'), 50))} / ${fmt(pct(rel('accepted'), 99))} / ${fmt(Math.max(...rel('accepted')))} | (part of TTFP) |`);
