@@ -20,6 +20,8 @@ export interface CreateJobHeaders {
 /** 202 body (also for an Idempotency-Key replay). */
 export interface JobAccepted {
   job_id: string;
+  /** W3C trace id shared by every log line and model call for this job (also in the X-Trace-Id header). */
+  trace_id: string;
   events_url: string;
   total_pages: number;
   backlog_pages: number;

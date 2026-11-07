@@ -96,9 +96,10 @@ test('metrics-lite counts outcomes and unknown routes get JSON 404', async () =>
 });
 
 // Helper: POST a fixed valid body with an Idempotency-Key (and any extra headers).
-const predictKeyed = (url: string, ep: string, key: string, extra: Record<string, string> = {}) =>
+const predictKeyed = (url: string, ep: string, key: string, extra: Record<string, string> = {}, signal?: AbortSignal) =>
   fetch(`${url}/v1/predict/${ep}`, {
     method: 'POST',
+    signal,
     headers: { ...JSON_H, 'idempotency-key': key, ...extra },
     body: JSON.stringify({ document_id: 'd1', page: 1 }),
   });
@@ -184,10 +185,36 @@ test('the access log carries the caller traceparent', async () => {
     await withServer({ ...env, LAYOUT_LATENCY_MS: '0', LOG_REQUESTS: '1' }, async (url) => {
       const tp = '00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01';
       await (await predictKeyed(url, 'layout', 'k', { traceparent: tp })).json();
-      // The log line is written on 'finish', which can land just after the client has the body.
+      // The log line is written on 'close', which can land just after the client has the body.
       await new Promise((r) => setTimeout(r, 20));
-      const entry = lines.map((l) => JSON.parse(l) as { url: string; traceparent?: string }).find((e) => e.url === '/v1/predict/layout');
+      type Line = { url: string; traceparent?: string; trace_id?: string; span_id?: string; idempotency_key?: string; t?: string };
+      const entry = lines.map((l) => JSON.parse(l) as Line).find((e) => e.url === '/v1/predict/layout');
       assert.equal(entry?.traceparent, tp);
+      assert.equal(entry?.trace_id, '4bf92f3577b34da6a3ce929d0e0e4736');
+      assert.equal(entry?.span_id, '00f067aa0ba902b7');
+      assert.equal(entry?.idempotency_key, 'k');
+      assert.ok(entry?.t && !Number.isNaN(Date.parse(entry.t)));
+    });
+  } finally {
+    console.log = original;
+  }
+});
+
+test('a hung call the client abandons is still logged, marked aborted', async () => {
+  const lines: string[] = [];
+  const original = console.log;
+  console.log = (line: string) => void lines.push(line);
+  try {
+    await withServer({ ...env, LAYOUT_HANG_RATE: '1', LOG_REQUESTS: '1' }, async (url) => {
+      await predictKeyed(url, 'layout', 'hang', {}, AbortSignal.timeout(100)).catch(() => {});
+      const entry = await (async () => {
+        for (let i = 0; i < 50; i++) {
+          const e = lines.map((l) => JSON.parse(l) as { url: string; aborted?: boolean }).find((x) => x.url === '/v1/predict/layout');
+          if (e) return e;
+          await new Promise((r) => setTimeout(r, 20));
+        }
+      })();
+      assert.equal(entry?.aborted, true);
     });
   } finally {
     console.log = original;

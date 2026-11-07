@@ -1,7 +1,9 @@
 import express, { type Express, type NextFunction, type Request, type Response } from 'express';
 import type { Config } from '../config.js';
 import { evaluate } from '../eval/evaluate.js';
+import { log, withLogContext } from '../observability/log.js';
 import type { MetricsText } from '../observability/metrics.js';
+import { newTraceId, parseTraceparent } from '../observability/trace.js';
 import { createJobService, type Scheduler } from '../services/job-service.js';
 import type { Db } from '../storage/db.js';
 import { HttpError } from './errors.js';
@@ -27,9 +29,49 @@ export function buildApp({ cfg, db, scheduler, notifier, metrics }: AppDeps): Ex
 
   const jobs = createJobService({ cfg, db, scheduler });
 
+  // Trace context: every request runs under a trace id, the caller's (`traceparent` header) or a fresh one.
+  // It is echoed as X-Trace-Id and lands on every log line written while handling the request.
+  app.use((req, res, next) => {
+    const start = performance.now();
+    const traceId = parseTraceparent(req.get('traceparent'))?.traceId ?? newTraceId();
+    res.locals.traceId = traceId;
+    res.set('X-Trace-Id', traceId);
+    // Access log on 'close', so aborted requests (and SSE streams, when they end) are logged too.
+    if (cfg.logRequests && req.path !== '/healthz') {
+      // (/healthz is skipped: the Docker healthcheck would drown the log.)
+      res.once('close', () => {
+        const l = res.locals as { traceId: string; jobId?: string };
+        log.info('request', {
+          trace_id: l.traceId,
+          job_id: l.jobId,
+          method: req.method,
+          url: req.originalUrl,
+          status: res.statusCode,
+          ms: Math.round(performance.now() - start),
+          ...(res.writableFinished ? {} : { aborted: true }),
+        });
+      });
+    }
+    withLogContext({ trace_id: traceId }, next);
+  });
+
+  // Job-scoped routes run under the job's own trace id, so its SSE and result reads join the job's trace.
+  app.param('id', (req, res, next, id: string) => {
+    const job = db.getJob(id);
+    if (!job) return next();
+    res.locals.traceId = job.trace_id;
+    res.locals.jobId = job.id;
+    res.set('X-Trace-Id', job.trace_id);
+    withLogContext({ trace_id: job.trace_id, job_id: job.id }, next);
+  });
+
   // Create a job from the raw PDF body; see JobService.submit for the admission and commit steps.
   app.post('/jobs', async (req: Request, res: Response<JobAccepted>) => {
-    res.status(202).json(await jobs.submit(req, req.get('Idempotency-Key') ?? null));
+    const accepted = await jobs.submit(req, req.get('Idempotency-Key') ?? null, res.locals.traceId as string);
+    // An Idempotency-Key replay returns the original job, and with it the original trace.
+    res.locals.traceId = accepted.trace_id;
+    res.locals.jobId = accepted.job_id;
+    res.status(202).set('X-Trace-Id', accepted.trace_id).json(accepted);
   });
 
   // SSE stream of the job's events, resumable with Last-Event-ID.
@@ -80,7 +122,7 @@ export function buildApp({ cfg, db, scheduler, notifier, metrics }: AppDeps): Ex
     } else if (e.type === 'entity.too.large') {
       res.status(413).json({ error: 'payload_too_large' });
     } else {
-      console.error(JSON.stringify({ level: 'error', msg: 'unhandled error', err: String(err), stack: (err as Error)?.stack }));
+      log.error('unhandled error', { trace_id: res.locals.traceId, err: String(err), stack: (err as Error)?.stack });
       res.status(500).json({ error: 'internal_error' });
     }
   });

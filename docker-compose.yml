@@ -6,7 +6,8 @@ services:
     environment:
       PORT: "8080"
       MOCK_SEED: ${MOCK_SEED:-42}
-      LOG_REQUESTS: ${MOCK_LOG_REQUESTS:-0}
+      # Access log, one JSON line per request with the caller's trace_id. LOG_REQUESTS=0 turns it off (benchmarks).
+      LOG_REQUESTS: ${LOG_REQUESTS:-1}
     ports:
       - "8080:8080"
     mem_limit: 256m
@@ -20,6 +21,8 @@ services:
       PORT: "3000"
       DATA_DIR: /data
       MODEL_URL: http://mock-models:8080
+      # Access log plus one line per model call, all carrying the job's trace_id.
+      LOG_REQUESTS: ${LOG_REQUESTS:-1}
     ports:
       - "3000:3000"
     volumes:

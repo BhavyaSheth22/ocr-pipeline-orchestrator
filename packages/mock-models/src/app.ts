@@ -31,12 +31,30 @@ export function buildApp(opts: AppOptions = {}): { app: Express; states: Record<
   app.use(express.json({ limit: '16kb' }));
 
   // Optional one-line JSON access log (LOG_REQUESTS=1); off by default so logging I/O never skews benchmarks.
+  // Logged on 'close' so hung calls the client gave up on appear too (aborted: true).
   if (env.LOG_REQUESTS === '1') {
     app.use((req, res, next) => {
+      if (req.path === '/healthz') return next(); // the Docker healthcheck would drown the log
       const start = performance.now();
-      res.on('finish', () => {
-        // traceparent ties this line to the orchestrator's trace; JSON.stringify drops it when the header is absent.
-        console.log(JSON.stringify({ level: 'info', method: req.method, url: req.originalUrl, status: res.statusCode, ms: Math.round(performance.now() - start), traceparent: req.get('traceparent') }));
+      res.once('close', () => {
+        // trace_id ties this line to the orchestrator's job; span_id (the traceparent's parent-id) to its exact
+        // 'model call' line. JSON.stringify drops the fields when the header is absent.
+        const tp = req.get('traceparent');
+        const [, traceId, spanId] = tp?.split('-') ?? [];
+        console.log(JSON.stringify({
+          t: new Date().toISOString(),
+          level: 'info',
+          msg: 'request',
+          trace_id: traceId,
+          span_id: spanId,
+          method: req.method,
+          url: req.originalUrl,
+          status: res.statusCode,
+          ms: Math.round(performance.now() - start),
+          idempotency_key: req.get('Idempotency-Key'),
+          aborted: res.writableFinished ? undefined : true,
+          traceparent: tp,
+        }));
       });
       next();
     });

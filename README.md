@@ -11,10 +11,12 @@ Design, trade-offs and benchmark numbers: [ARCHITECTURE.md](ARCHITECTURE.md). Ho
 ```bash
 docker compose up --build                                  # mock-models :8080, orchestrator :3000
 curl -s -X POST localhost:3000/jobs -H 'content-type: application/pdf' --data-binary @doc.pdf
-#   → 202 {"job_id":"…","events_url":"/jobs/…/events","total_pages":12,"backlog_pages":12,"eta_s":2}
+#   → 202 {"job_id":"…","trace_id":"…","events_url":"/jobs/…/events","total_pages":12,"backlog_pages":12,"eta_s":2}
 curl -N localhost:3000/jobs/<job_id>/events                # SSE: job, page (layout|final)…, job.completed
 curl -s localhost:3000/jobs/<job_id>/result                # assembled document tree (409 while running)
 curl -s localhost:3000/metrics                             # Prometheus
+docker compose logs -f | grep <trace_id>                  # one job across both services (see Logging and tracing)
+LOG_REQUESTS=0 docker compose up -d                        # request logging off, for benchmark runs
 docker compose --profile bench run --rm bench              # 50 jobs / 1000 pages, then 1,000 POST /evaluate calls; add --noise-rps 8 for 429 spikes, --eval-during for /evaluate under load
 ```
 
@@ -32,6 +34,23 @@ process; default min(2, CPUs − 1) on Linux, 0 elsewhere; 0 runs everything in 
 `LAYOUT_RPS`/`VLM_RPS` (100/10, upper bounds for the adaptive rate), `MAX_QUEUED_PAGES` (6000),
 `RESULT_TTL_MS` (1 h), `TED_MAX_STEPS` (5e6). Timing knobs used by tests: `LAYOUT_TIMEOUT_MS`,
 `VLM_TIMEOUT_MS`, `BREAKER_OPEN_MS`, `BACKOFF_BASE_MS`, `DEGRADED_AFTER_MS`, `MAX_UPLOAD_BYTES`.
+Logging: `LOG_REQUESTS=1` (request and model-call lines; off unless set, on in compose), `LOG_LEVEL=silent`.
+
+## Logging and tracing
+Both services write JSON lines to stdout. Every job has one W3C trace id: the client's, if `POST /jobs` sends a
+valid `traceparent` header, otherwise a new one. It is returned as `trace_id` in the 202 and as `X-Trace-Id`
+on every response (job routes answer with the job's trace id). The orchestrator sends it to the models as
+`traceparent: 00-<trace_id>-<span_id>-01`, with a new `span_id` for each call. With `LOG_REQUESTS=1`:
+
+| Service | `msg` | Fields |
+|---|---|---|
+| orchestrator | `request` | `trace_id`, `job_id`, `method`, `url`, `status`, `ms`, `aborted` |
+| orchestrator | `model call` | `trace_id`, `job_id`, `page`, `lane`, `attempt`, `span_id`, `outcome`, `status`, `ms` |
+| mock-models | `request` | `trace_id`, `span_id`, `method`, `url`, `status`, `ms`, `idempotency_key`, `aborted`, `traceparent` |
+
+`grep <trace_id>` across both services' logs shows a job end to end, and `span_id` pairs each `model call`
+with the mock line for that call. `/healthz` is not logged. Lifecycle lines (`job accepted`, retries,
+fallbacks, `job completed`) carry `trace_id` whatever `LOG_REQUESTS` is set to.
 
 ## Setup (all tooling is project-local)
 ```bash

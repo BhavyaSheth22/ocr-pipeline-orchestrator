@@ -74,8 +74,10 @@ Send `Idempotency-Key: <1-255 chars>` to make a predict call safe to repeat (IET
 `PORT`, `MOCK_SEED`, `LAYOUT_RPS`, `VLM_RPS`, `LAYOUT_BURST`, `VLM_BURST`, `LAYOUT_LATENCY_MS`,
 `VLM_LATENCY_MIN_MS`, `VLM_LATENCY_MAX_MS`, `LAYOUT_FAILURE_RATE`, `VLM_FAILURE_RATE`,
 `LAYOUT_HANG_RATE`, `VLM_HANG_RATE` (fraction of requests that never answer), `LAYOUT_MAX_INFLIGHT`,
-`VLM_MAX_INFLIGHT`, `REPLAY_MAX_KEYS` (default 10000), `LOG_REQUESTS=1` (one JSON log line per request,
-including the caller's `traceparent` header when sent).
+`VLM_MAX_INFLIGHT`, `REPLAY_MAX_KEYS` (default 10000), `LOG_REQUESTS=1` (one JSON log line per request, on
+in docker compose: `t`, `method`, `url`, `status`, `ms`, `idempotency_key`, and the caller's `traceparent`
+split into `trace_id` and `span_id` when sent; a hung call the client gave up on is logged with
+`aborted: true`; `/healthz` is not logged).
 
 ## Try it
 ```bash

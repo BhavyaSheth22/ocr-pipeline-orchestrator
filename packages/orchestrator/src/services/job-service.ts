@@ -21,7 +21,7 @@ export interface Scheduler {
 export type UploadRequest = Readable & { headers: Record<string, unknown> };
 
 function accepted(job: JobRow, backlogPages: number, etaS: number): JobAccepted {
-  return { job_id: job.id, events_url: `/jobs/${job.id}/events`, total_pages: job.total_pages, backlog_pages: backlogPages, eta_s: etaS };
+  return { job_id: job.id, trace_id: job.trace_id, events_url: `/jobs/${job.id}/events`, total_pages: job.total_pages, backlog_pages: backlogPages, eta_s: etaS };
 }
 
 // Job use-cases (ingestion and result assembly), kept free of Express so routes stay thin.
@@ -31,7 +31,8 @@ export function createJobService({ cfg, db, scheduler }: { cfg: Config; db: Db; 
 
   return {
     // Ingestion: admission check before reading the body, stream to disk, count pages, commit in one transaction.
-    async submit(req: UploadRequest, idemKey: string | null): Promise<JobAccepted> {
+    // `traceId` is the request's (the client's traceparent, or a fresh one); the job keeps it for its whole life.
+    async submit(req: UploadRequest, idemKey: string | null, traceId: string): Promise<JobAccepted> {
       if (idemKey !== null && (idemKey.length === 0 || idemKey.length > 255)) {
         throw new HttpError(400, 'bad_request', 'Idempotency-Key must be 1-255 characters');
       }
@@ -69,9 +70,7 @@ export function createJobService({ cfg, db, scheduler }: { cfg: Config; db: Db; 
         db.createJob({
           id,
           idemKey,
-          // 32 hex chars (W3C trace-id). randomUUID draws from a cached entropy pool; randomBytes made a
-          // synchronous getrandom call per upload.
-          traceId: randomUUID().replaceAll('-', ''),
+          traceId,
           pdfPath,
           totalPages: pages,
           window: cfg.window,

@@ -1,4 +1,3 @@
-import { randomBytes } from 'node:crypto';
 import { rm } from 'node:fs/promises';
 import { CircuitBreaker } from './breaker.js';
 import type { Config, LaneName } from '../config.js';
@@ -7,6 +6,7 @@ import { paths, removeJobFiles } from '../storage/files.js';
 import { type ExtractPage } from '../pdf/pdf.js';
 import { Lane } from './lane.js';
 import { log, withLogContext } from '../observability/log.js';
+import { newSpanId, traceparent } from '../observability/trace.js';
 import { callModel, type Outcome } from './model-client.js';
 import { AdaptiveTokenBucket } from './token-bucket.js';
 
@@ -165,12 +165,18 @@ export function createScheduler({ cfg, db, extract, notify, events = {} }: Sched
               return apply(lane, job, task, { kind: 'failure', reason: String(err) });
             }
           }
-          const traceparent = `00-${job.trace_id}-${randomBytes(8).toString('hex')}-01`;
+          // span_id is this call's parent-id in the traceparent; the mock logs it too, pairing the two lines.
+          const spanId = newSpanId();
+          const start = performance.now();
           const outcome = await callModel(
             cfg.modelUrl + lanes[lane].cfg.path,
             { document_id: job.id, page: task.page, image_ref: imageRef },
-            { idempotencyKey: task.call_key, traceparent, timeoutMs: lanes[lane].cfg.timeoutMs },
+            { idempotencyKey: task.call_key, traceparent: traceparent(job.trace_id, spanId), timeoutMs: lanes[lane].cfg.timeoutMs },
           );
+          if (cfg.logRequests) {
+            const status = outcome.kind === 'ok' ? 200 : outcome.status;
+            log.info('model call', { span_id: spanId, outcome: outcome.kind, status, ms: Math.round(performance.now() - start) });
+          }
           await apply(lane, job, task, outcome);
         });
       },

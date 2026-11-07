@@ -39,6 +39,8 @@ export interface Config {
   backoffBaseMs: number;
   degradedAfterMs: number;
   tedMaxSteps: number;
+  /** One JSON log line per HTTP request and per model call (LOG_REQUESTS=1). Off by default so log I/O never skews benchmarks. */
+  logRequests: boolean;
   lanes: Record<LaneName, LaneConfig>;
 }
 
@@ -77,6 +79,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     backoffBaseMs: num('BACKOFF_BASE_MS', 250),
     degradedAfterMs: num('DEGRADED_AFTER_MS', 30_000),
     tedMaxSteps: num('TED_MAX_STEPS', 5_000_000),
+    logRequests: env.LOG_REQUESTS === '1',
     lanes: {
       layout: {
         path: '/v1/predict/layout',
