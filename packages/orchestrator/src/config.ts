@@ -42,11 +42,12 @@ export interface Config {
   lanes: Record<LaneName, LaneConfig>;
 }
 
-// Up to 4 HTTP workers, leaving a CPU for the pipeline process. A 50-upload burst costs ~2-3 ms of event-loop
-// time per upload; 4 workers bring the serial part from ~150 ms to ~40 ms. More buys little and each worker
-// is another ~50 MB process. Several processes share the port through SO_REUSEPORT, so Linux only.
+// Up to 2 HTTP workers, leaving a CPU for the pipeline process. A 50-upload burst costs ~2-3 ms of event-loop
+// time per upload; 2 workers halve the serial part (~150 ms to ~75 ms) and take it off the pipeline's loop.
+// Each worker is another ~90 MB of RSS (4 workers put summed RSS at 472-481 MB against the 500 MB target).
+// Several processes share the port through SO_REUSEPORT, so Linux only.
 function defaultHttpWorkers(): number {
-  return process.platform === 'linux' ? Math.min(4, Math.max(1, availableParallelism() - 1)) : 0;
+  return process.platform === 'linux' ? Math.min(2, Math.max(1, availableParallelism() - 1)) : 0;
 }
 
 // Builds the config from env, falling back to spec values; throws on a non-numeric number.

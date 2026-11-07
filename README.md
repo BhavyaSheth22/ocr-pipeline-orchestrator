@@ -24,7 +24,8 @@ docker compose --profile bench run --rm bench              # 50 jobs / 1000 page
 | POST | `/evaluate` | `{prediction, ground_truth}` (same tree shape) → `{cer, wer, iou, ted, timing_ms}` |
 | GET | `/metrics`, `/healthz` | Prometheus text; liveness |
 
-Orchestrator settings (env): `PORT` (3000), `DATA_DIR` (./data), `MODEL_URL`, `QPDF_BIN` (qpdf),
+Orchestrator settings (env): `PORT` (3000), `HTTP_WORKERS` (HTTP worker processes in front of the pipeline
+process; default min(2, CPUs − 1) on Linux, 0 elsewhere; 0 runs everything in one process), `DATA_DIR` (./data), `MODEL_URL`, `QPDF_BIN` (qpdf),
 `LAYOUT_RPS`/`VLM_RPS` (100/10, upper bounds for the adaptive rate), `MAX_QUEUED_PAGES` (6000),
 `RESULT_TTL_MS` (1 h), `TED_MAX_STEPS` (5e6). Timing knobs used by tests: `LAYOUT_TIMEOUT_MS`,
 `VLM_TIMEOUT_MS`, `BREAKER_OPEN_MS`, `BACKOFF_BASE_MS`, `DEGRADED_AFTER_MS`, `MAX_UPLOAD_BYTES`.
@@ -38,14 +39,14 @@ No global installs: TypeScript, tsx, @types/express and autocannon are devDepend
 The orchestrator needs **qpdf** on the machine (`sudo apt install qpdf`; the Docker image has it).
 
 ```bash
-npm test                                         # mock + orchestrator tests (18 qpdf tests skip without qpdf)
+npm test                                         # mock + orchestrator tests (21 qpdf tests skip without qpdf)
 npm run dev -w @ocr/mock-models                  # mock on :8080
 MODEL_URL=http://127.0.0.1:8080 npm run dev -w @ocr/orchestrator     # orchestrator on :3000
 npm run bench:load -w @ocr/orchestrator -- --orch http://127.0.0.1:3000 --mock http://127.0.0.1:8080
 npm run bench:ted -w @ocr/orchestrator           # TED p50/p99 on 1,000 random 50-node pairs
 ```
 
-No qpdf locally? Run the full orchestrator suite (all 67 tests, crash test included) in a throwaway
+No qpdf locally? Run the full orchestrator suite (all 72 tests, crash test included) in a throwaway
 container. It reuses this checkout's `node_modules`, so it needs a Linux x64 host (WSL works):
 ```bash
 docker run --rm -v "$PWD":/app:ro -w /app/packages/orchestrator -e QPDF_BIN=/usr/bin/qpdf node:22-bookworm-slim \
@@ -53,7 +54,7 @@ docker run --rm -v "$PWD":/app:ro -w /app/packages/orchestrator -e QPDF_BIN=/usr
 ```
 **Clean-room run (no host `node_modules`)**: copies the checkout into the container, installs `qpdf` and
 the build tools, runs `npm ci` there (so `better-sqlite3` is compiled for the container's Node 22, not the host's),
-then runs all 67 tests with none skipped. Use this when the host Node is not 22 (`better-sqlite3` segfaults
+then runs all 72 tests with none skipped. Use this when the host Node is not 22 (`better-sqlite3` segfaults
 under Node 18) or the host `node_modules` was built for another platform:
 ```bash
 docker run --rm -v "$PWD":/src:ro node:22-alpine sh -c '
