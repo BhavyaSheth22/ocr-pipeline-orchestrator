@@ -2,7 +2,10 @@
 
 Monorepo for the Sarvam Vision takeaway: a high-throughput OCR pipeline orchestrator
 (`packages/orchestrator`) in front of a mock layout/VLM model server (`packages/mock-models`).
-Design, trade-offs and benchmark numbers: [ARCHITECTURE.md](ARCHITECTURE.md).
+The orchestrator container runs one pipeline process (SQLite queue, model calls, qpdf page extraction)
+and, on Linux, 2 HTTP worker processes that share port 3000 (uploads, SSE, `/evaluate`).
+Design, trade-offs and benchmark numbers: [ARCHITECTURE.md](ARCHITECTURE.md). How TTFP was brought under
+200 ms, with the measurements: [docs/PERFORMANCE.md](docs/PERFORMANCE.md).
 
 ## Quick start (Docker)
 ```bash
@@ -43,6 +46,9 @@ npm test                                         # mock + orchestrator tests (21
 npm run dev -w @ocr/mock-models                  # mock on :8080
 MODEL_URL=http://127.0.0.1:8080 npm run dev -w @ocr/orchestrator     # orchestrator on :3000
 npm run bench:load -w @ocr/orchestrator -- --orch http://127.0.0.1:3000 --mock http://127.0.0.1:8080
+#   options: --jobs 50 --pages 1000 --noise-rps 8 (real 429s) --eval-pairs 1000 (0 skips /evaluate)
+#            --eval-nodes 50 --eval-during (/evaluate calls while the jobs run). Exits non-zero on a dropped
+#            page, a failed /evaluate call, or a TED ≥ 100 ms.
 npm run bench:ted -w @ocr/orchestrator           # TED p50/p99 on 1,000 random 50-node pairs
 ```
 
