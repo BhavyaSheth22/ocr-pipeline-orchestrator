@@ -96,7 +96,10 @@ export function openDb(path: string) {
     insertEvent: db.prepare(`INSERT INTO events (job_id, seq, type, page, data) VALUES (?, ?, ?, ?, ?)`),
     jobById: db.prepare(`SELECT * FROM jobs WHERE id = ?`),
     jobByIdem: db.prepare(`SELECT * FROM jobs WHERE idem_key = ?`),
-    backlog: db.prepare(`SELECT COUNT(*) AS n FROM pages WHERE state != 'done'`),
+    // IN, not != 'done': it counts only unfinished pages through the pages_claim index instead of scanning
+    // every page kept for retention.
+    backlog: db.prepare(`SELECT COUNT(*) AS n FROM pages
+      WHERE state IN ('layout_ready', 'layout_running', 'vlm_ready', 'vlm_running')`),
     // One statement claims the next page, so there is no read-then-write race. Page index first, then job
     // arrival order: every job's page 1 goes before anyone's page 2. Only pages inside the job's window qualify.
     claim: db.prepare(`UPDATE pages SET state = @running,

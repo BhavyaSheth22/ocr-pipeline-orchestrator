@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { createReadStream, existsSync, readdirSync, statSync } from 'node:fs';
+import { createReadStream, existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { Readable } from 'node:stream';
 import { buildApp } from '../src/http/app.js';
@@ -124,6 +124,23 @@ test('a full backlog gets 503 with a Retry-After before the body is read', { ski
     const ra = Number(res.headers.get('retry-after'));
     // (2 - 2 + 100) / 10 = 10 s, jittered up to +20%.
     assert.ok(ra >= 10 && ra <= 12, `retry-after ${ra}`);
+  });
+  cleanup(cfg);
+});
+
+test('uploads below and above the in-memory buffer limit are stored byte for byte', { skip }, async () => {
+  const { cfg, db, app } = await setup();
+  await withServer(app, async (url) => {
+    // 4 pages inline (a few KB, buffered) and padded past 256 KiB (streamed after the first chunks).
+    for (const [name, pad] of [['small', 0], ['large', 300 * 1024]] as const) {
+      const file = join(cfg.dataDir, `${name}.pdf`);
+      await makePdf(file, 4, pad);
+      const res = await upload(url, file);
+      assert.equal(res.status, 202, name);
+      const { job_id } = (await res.json()) as { job_id: string };
+      assert.ok(readFileSync(paths.job(cfg, job_id)).equals(readFileSync(file)), `${name}: stored file differs`);
+      assert.equal(db.getJob(job_id)!.total_pages, 4);
+    }
   });
   cleanup(cfg);
 });

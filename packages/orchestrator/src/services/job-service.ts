@@ -1,4 +1,4 @@
-import { randomBytes, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import { rm } from 'node:fs/promises';
 import type { Readable } from 'node:stream';
 import type { Config } from '../config.js';
@@ -54,10 +54,10 @@ export function createJobService({ cfg, db, scheduler }: { cfg: Config; db: Db; 
       // file is an orphan, which boot cleanup deletes after a crash (cleanOrphans).
       const id = randomUUID();
       const pdfPath = paths.job(cfg, id);
-      await receiveUpload(req, pdfPath, cfg.maxUploadBytes);
+      const { body } = await receiveUpload(req, pdfPath, cfg.maxUploadBytes);
       let pages: number;
       try {
-        pages = await countPages(cfg, pdfPath);
+        pages = await countPages(cfg, pdfPath, body);
       } catch (err) {
         await rm(pdfPath, { force: true });
         throw err;
@@ -69,7 +69,9 @@ export function createJobService({ cfg, db, scheduler }: { cfg: Config; db: Db; 
         db.createJob({
           id,
           idemKey,
-          traceId: randomBytes(16).toString('hex'),
+          // 32 hex chars (W3C trace-id). randomUUID draws from a cached entropy pool; randomBytes made a
+          // synchronous getrandom call per upload.
+          traceId: randomUUID().replaceAll('-', ''),
           pdfPath,
           totalPages: pages,
           window: cfg.window,

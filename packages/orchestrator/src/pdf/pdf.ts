@@ -12,8 +12,9 @@ function qpdfOk(err: unknown): boolean {
 
 // Page count for an upload. The in-process reader answers for well-formed files without a fork; anything it
 // does not fully understand goes to qpdf, which also decides whether the file is a PDF at all (422).
-export async function countPages(cfg: Config, file: string): Promise<number> {
-  const n = readPageCount(file) ?? (await qpdfPageCount(cfg, file));
+// `body`, when given, is the file's content already in memory (a small upload), so nothing is re-read.
+export async function countPages(cfg: Config, file: string, body?: Buffer | null): Promise<number> {
+  const n = readPageCount(body ?? file) ?? (await qpdfPageCount(cfg, file));
   if (n < 1) throw new HttpError(422, 'not_a_pdf', 'no pages');
   if (n > cfg.maxPages) throw new HttpError(422, 'too_many_pages', `${n} pages, max ${cfg.maxPages}`);
   return n;

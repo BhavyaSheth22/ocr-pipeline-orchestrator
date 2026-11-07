@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "type": "module",
   "workspaces": ["packages/*"],
-  "engines": { "node": ">=22" },
+  "engines": { "node": ">=22.12" },
   "packageManager": "npm@10.9.9",
   "scripts": {
     "build": "npm run build --workspaces --if-present",

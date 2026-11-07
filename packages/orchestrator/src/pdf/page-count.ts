@@ -5,8 +5,9 @@
 // encrypted files, filters other than Flate, broken or shifted xref offsets, oversized structures.
 // So a malformed upload still gets qpdf's verdict (422), and this reader never has to repair a file.
 //
-// Reads are synchronous preads of a few KB. The upload was written by this process milliseconds earlier,
-// so they are page-cache hits (microseconds), cheaper than libuv threadpool round trips during a burst.
+// A small upload is read from its in-memory body. Otherwise reads are synchronous preads of a few KB: the
+// upload was written by this process milliseconds earlier, so they are page-cache hits (microseconds),
+// cheaper than libuv threadpool round trips during a burst.
 import { closeSync, fstatSync, openSync, readSync } from 'node:fs';
 import { inflateSync } from 'node:zlib';
 
@@ -36,8 +37,15 @@ const MAX_SECTIONS = 32;
 const WS = new Set([0, 9, 10, 12, 13, 32]);
 const DELIM = new Set([...'()<>[]{}/%'].map((ch) => ch.charCodeAt(0)));
 
-/** The page count from the file's own structures, or null when qpdf must decide. Never throws. */
-export function readPageCount(file: string): number | null {
+/** The page count from the file's (or buffer's) own structures, or null when qpdf must decide. Never throws. */
+export function readPageCount(file: string | Buffer): number | null {
+  if (Buffer.isBuffer(file)) {
+    try {
+      return pageCount((pos, len) => file.subarray(pos, Math.min(pos + len, file.length)), file.length);
+    } catch {
+      return null;
+    }
+  }
   let fd: number | undefined;
   try {
     fd = openSync(file, 'r');

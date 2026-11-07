@@ -1,7 +1,7 @@
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import type { Server } from 'node:http';
 import { buildApp } from './http/app.js';
+import { claimPort, closeAll, listenAll, LISTENERS } from './http/listen.js';
 import { loadConfig, type Config } from './config.js';
 import { openDb } from './storage/db.js';
 import { cleanOrphans, ensureDirs, removeJobFiles } from './storage/files.js';
@@ -25,8 +25,9 @@ async function warmUp(cfg: Config): Promise<void> {
   await qpdf.warm(cfg.qpdfBin).catch((err: unknown) => log.warn('warm-up: qpdf not available', { err: String(err) }));
 }
 
-// Boots the orchestrator: db open → recover → clean orphans → warm up → lanes start → listen. Returns a stop function.
+// Boots the orchestrator: claim port → db open → recover → clean orphans → warm up → lanes start → listen. Returns a stop function.
 export async function startSystem(cfg: Config, port = cfg.port) {
+  const bound = await claimPort(port); // first, so a taken port fails before anything starts
   await ensureDirs(cfg);
   const db = openDb(join(cfg.dataDir, 'orchestrator.db'));
   const recovered = db.recover();
@@ -52,24 +53,20 @@ export async function startSystem(cfg: Config, port = cfg.port) {
   }, 60_000);
   sweep.unref();
 
-  const server: Server = await new Promise((resolve) => {
-    const s = app.listen(port, '0.0.0.0', () => resolve(s));
-  });
-  log.info('orchestrator listening', { port: (server.address() as { port: number }).port });
+  const servers = await listenAll(app, bound, LISTENERS);
+  log.info('orchestrator listening', { port: bound, listeners: servers.length });
 
   // Graceful stop: refuse new connections, let in-flight model calls finish, then close the db.
   async function stop(): Promise<void> {
     clearInterval(sweep);
-    const closed = new Promise((r) => server.close(r));
-    server.closeIdleConnections();
+    const closeRest = closeAll(servers);
     await scheduler.stop();
-    server.closeAllConnections();
-    await closed;
+    await closeRest();
     await qpdf.close(); // after the scheduler drained, so no extraction is still waiting on a worker
     db.close();
   }
 
-  return { cfg, db, scheduler, notifier, server, stop, port: (server.address() as { port: number }).port };
+  return { cfg, db, scheduler, notifier, stop, port: bound };
 }
 
 export type System = Awaited<ReturnType<typeof startSystem>>;
