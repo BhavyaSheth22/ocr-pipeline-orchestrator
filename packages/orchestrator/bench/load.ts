@@ -4,6 +4,8 @@
 //
 //   npm run bench:load -w @ocr/orchestrator -- --orch http://127.0.0.1:3000 --mock http://127.0.0.1:8080
 //   options: --jobs 50 --pages 1000 --noise-rps 8 (spends the mock's VLM quota from outside → real 429 spikes)
+//            --eval-pairs 1000 (POST /evaluate round trips after the jobs drain; 0 skips) --eval-nodes 50
+//            --eval-during (also run sequential /evaluate calls while the jobs run; perturbs TTFP slightly)
 import { randomUUID } from 'node:crypto';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -12,6 +14,8 @@ import { monitorEventLoopDelay } from 'node:perf_hooks';
 import { parseArgs } from 'node:util';
 import { makePdf } from './make-pdf.js';
 import { Assembler, readSse } from './sse-client.js';
+import { combTree, docTree, rng } from './trees.js';
+import type { EvaluateResponse } from '../src/http/types.js';
 
 const { values: args } = parseArgs({
   options: {
@@ -20,6 +24,9 @@ const { values: args } = parseArgs({
     jobs: { type: 'string', default: '50' },
     pages: { type: 'string', default: '1000' },
     'noise-rps': { type: 'string', default: '0' },
+    'eval-pairs': { type: 'string', default: '1000' },
+    'eval-nodes': { type: 'string', default: '50' },
+    'eval-during': { type: 'boolean', default: false },
   },
 });
 // Unique per run: in Docker the bench is always PID 1, so a pid-based key replayed the previous run's jobs.
@@ -27,6 +34,8 @@ const RUN_ID = randomUUID();
 const JOBS = Number(args.jobs);
 const TOTAL_PAGES = Number(args.pages);
 const NOISE_RPS = Number(args['noise-rps']);
+const EVAL_PAIRS = Number(args['eval-pairs']);
+const EVAL_NODES = Number(args['eval-nodes']);
 
 interface JobStats {
   pages: number;
@@ -111,6 +120,45 @@ const noise = (async () => {
   }
 })();
 
+// /evaluate client: sequential round trips against the deployed orchestrator (whichever process the kernel
+// picks), recording the client round trip and the server-side timings. Pre-serialized bodies, so the
+// measured time is the request, not JSON.stringify.
+interface EvalStats {
+  rtt: number[];
+  ted: number[];
+  total: number[];
+  errors: number;
+  firstError?: string;
+}
+const r = rng(42);
+const evalBodies = Array.from({ length: Math.max(EVAL_PAIRS, 1) }, () => JSON.stringify({ prediction: docTree(EVAL_NODES, r), ground_truth: docTree(EVAL_NODES, r) }));
+const combBody = JSON.stringify({ prediction: combTree(EVAL_NODES), ground_truth: combTree(EVAL_NODES) });
+// Posts bodies in order (cycling) until `count` calls are made or `keepGoing` turns false.
+async function runEval(bodies: string[], count: number, keepGoing: () => boolean = () => true): Promise<EvalStats> {
+  const st: EvalStats = { rtt: [], ted: [], total: [], errors: 0 };
+  for (let i = 0; i < count && keepGoing(); i++) {
+    const t = performance.now();
+    try {
+      const res = await fetch(`${args.orch}/evaluate`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: bodies[i % bodies.length] });
+      const out = (await res.json()) as EvaluateResponse;
+      if (res.status !== 200 || typeof out.ted?.distance !== 'number' || typeof out.cer?.value !== 'number') throw new Error(`POST /evaluate ${res.status} ${JSON.stringify(out).slice(0, 200)}`);
+      st.rtt.push(performance.now() - t);
+      st.ted.push(out.timing_ms.ted);
+      st.total.push(out.timing_ms.total);
+    } catch (err) {
+      st.errors++;
+      st.firstError ??= String(err);
+    }
+  }
+  return st;
+}
+// p50 / p99 / max of a sample, formatted to 0.01 ms (evaluate times are well under 1 ms server-side).
+const tri = (v: number[]) => (v.length ? [pct(v, 50), pct(v, 99), Math.max(...v)].map((x) => `${x.toFixed(2)} ms`).join(' / ') : 'n/a');
+
+// Optional: /evaluate traffic while the jobs run, to show it stays fast while uploads and SSE are busy.
+let evalDuringOn = args['eval-during'];
+const evalDuring = evalDuringOn ? runEval(evalBodies, Infinity, () => evalDuringOn) : null;
+
 const before = await fetch(`${args.mock}/metrics-lite`).then((r) => r.json() as Promise<Record<string, Record<string, number>>>, () => null);
 
 // Uploads one job and follows its stream to job.completed, recording the timing points.
@@ -154,6 +202,16 @@ const start = performance.now();
 const results = await Promise.all(Array.from({ length: JOBS }, (_, i) => runJob(i)));
 const wall = performance.now() - start;
 noiseOn = false;
+evalDuringOn = false;
+const evalUnderLoad = await evalDuring;
+// /evaluate on the idle stack, after the jobs have drained (the sampler keeps watching memory and loop lag).
+let evalIdle: EvalStats | null = null;
+let evalComb: EvalStats | null = null;
+if (EVAL_PAIRS > 0) {
+  await runEval(evalBodies, 50); // warm up each worker's JIT
+  evalIdle = await runEval(evalBodies, EVAL_PAIRS);
+  evalComb = await runEval([combBody], 200);
+}
 samplerOn = false;
 await Promise.all([sampler, noise]);
 const after = await fetch(`${args.mock}/metrics-lite`).then((r) => r.json() as Promise<Record<string, Record<string, number>>>, () => null);
@@ -185,9 +243,25 @@ console.log(`| Wall time | ${(wall / 1000).toFixed(1)} s | |`);
 console.log(`| Mock VLM: ok / 429 / 500 / replayed | ${delta('vlm', 'ok')} / ${delta('vlm', 'rateLimited')} / ${delta('vlm', 'failed')} / ${delta('vlm', 'replayed')} | |`);
 console.log(`| Mock layout: ok / 429 / 500 | ${delta('layout', 'ok')} / ${delta('layout', 'rateLimited')} / ${delta('layout', 'failed')} | |`);
 if (NOISE_RPS > 0) console.log(`| Noise requests sent | ${noiseSent} | |`);
+if (evalIdle && evalComb) {
+  console.log(`| /evaluate idle, ${evalIdle.rtt.length} random ${EVAL_NODES}-node pairs: HTTP round trip p50 / p99 / max | ${tri(evalIdle.rtt)} | (reported) |`);
+  console.log(`| /evaluate idle: TED only, server-side p50 / p99 / max | ${tri(evalIdle.ted)} | < 100 ms |`);
+  console.log(`| /evaluate idle: all metrics, server-side p50 / p99 / max | ${tri(evalIdle.total)} | (reported) |`);
+  console.log(`| /evaluate worst ${EVAL_NODES}-node comb: TED server-side / HTTP round trip p99 | ${tri(evalComb.ted).split(' / ')[1]} / ${tri(evalComb.rtt).split(' / ')[1]} | < 100 ms |`);
+}
+if (evalUnderLoad) {
+  console.log(`| /evaluate during the job run (${evalUnderLoad.rtt.length} calls): HTTP round trip p50 / p99 / max | ${tri(evalUnderLoad.rtt)} | (reported) |`);
+  console.log(`| /evaluate during the job run: TED server-side p50 / p99 / max | ${tri(evalUnderLoad.ted)} | < 100 ms |`);
+}
+const evalRuns = [evalIdle, evalComb, evalUnderLoad].filter((x): x is EvalStats => x !== null);
+const evalErrors = evalRuns.reduce((a, s) => a + s.errors, 0);
+const evalSlow = evalRuns.some((s) => s.ted.some((v) => v >= 100));
+for (const s of evalRuns.filter((x) => x.firstError)) console.log(`evaluate error: ${s.firstError}`);
 for (const r of results.filter((x) => x.error)) console.log(`job error: ${r.error}`);
-if (dropped > 0) {
-  console.error(`\nFAIL: ${dropped} job(s) did not complete with every page`);
+if (dropped > 0 || evalErrors > 0 || evalSlow) {
+  if (dropped > 0) console.error(`\nFAIL: ${dropped} job(s) did not complete with every page`);
+  if (evalErrors > 0) console.error(`\nFAIL: ${evalErrors} /evaluate call(s) failed`);
+  if (evalSlow) console.error('\nFAIL: a /evaluate TED took ≥ 100 ms');
   process.exit(1);
 }
-console.log('\nOK: every job completed with every page, assembled in order from the stream.');
+console.log(`\nOK: every job completed with every page, assembled in order from the stream${evalRuns.length ? '; every /evaluate call answered 200 with TED < 100 ms' : ''}.`);

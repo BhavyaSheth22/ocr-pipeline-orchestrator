@@ -12,7 +12,7 @@ curl -s -X POST localhost:3000/jobs -H 'content-type: application/pdf' --data-bi
 curl -N localhost:3000/jobs/<job_id>/events                # SSE: job, page (layout|final)…, job.completed
 curl -s localhost:3000/jobs/<job_id>/result                # assembled document tree (409 while running)
 curl -s localhost:3000/metrics                             # Prometheus
-docker compose --profile bench run --rm bench              # 50 jobs / 1000 pages; add --noise-rps 8 for 429 spikes
+docker compose --profile bench run --rm bench              # 50 jobs / 1000 pages, then 1,000 POST /evaluate calls; add --noise-rps 8 for 429 spikes, --eval-during for /evaluate under load
 ```
 
 ## Orchestrator API
