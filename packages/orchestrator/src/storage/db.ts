@@ -3,6 +3,11 @@ import type { LaneName } from '../config.js';
 
 // SQLite is the queue, the result store and the SSE event log. Every state change, its result and its
 // event commit in one transaction, guarded by the state the caller expects, so a stale outcome is a no-op.
+//
+// Several processes may open the same file (the pipeline process and the HTTP workers; WAL lets readers
+// and one writer work at once). Multi-statement writes therefore use BEGIN IMMEDIATE: a deferred transaction
+// that reads first and then writes fails with SQLITE_BUSY instead of waiting when another process committed
+// in between. IMMEDIATE takes the write lock up front, so the busy timeout (5 s) applies and it just waits.
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS jobs (
@@ -148,11 +153,14 @@ export function openDb(path: string) {
     return seq;
   }
 
+  // A write transaction that takes the write lock at BEGIN (see the header).
+  const tx = <A extends unknown[], R>(fn: (...args: A) => R) => db.transaction(fn).immediate;
+
   return {
     raw: db,
 
     // Inserts the job, its N pages and the `job` header event atomically.
-    createJob: db.transaction((j: NewJob, now: number = Date.now()) => {
+    createJob: tx((j: NewJob, now: number = Date.now()) => {
       s.insertJob.run({ id: j.id, idemKey: j.idemKey, traceId: j.traceId, pdfPath: j.pdfPath, totalPages: j.totalPages, window: j.window, now });
       for (let p = 1; p <= j.totalPages; p++) s.insertPage.run(j.id, p, now);
       appendEvent(j.id, 'job', null, { job_id: j.id, total_pages: j.totalPages, window: j.window, ...j.header });
@@ -183,7 +191,7 @@ export function openDb(path: string) {
       (s.fail.get({ ready: `${lane}_ready`, running: `${lane}_running`, job, page, notBefore, now }) as { attempts: number } | undefined)?.attempts,
 
     // Layout finished (or was exhausted when layout is null): page moves to the VLM lane, partial event appended.
-    advanceToVlm: db.transaction((job: string, page: number, layout: unknown | null, partial: unknown, now: number = Date.now()): boolean => {
+    advanceToVlm: tx((job: string, page: number, layout: unknown | null, partial: unknown, now: number = Date.now()): boolean => {
       const ok = s.toVlm.run({ job, page, now, layout: layout === null ? null : JSON.stringify(layout) }).changes > 0;
       if (ok && layout !== null) {
         const { watermark } = s.jobById.get(job) as JobRow;
@@ -194,7 +202,7 @@ export function openDb(path: string) {
 
     // Marks the page done, appends its final event, moves the watermark and completes the job on its last page.
     // Returns undefined for a stale outcome, else whether the job just completed.
-    finalize: db.transaction((from: LaneName, job: string, page: number, out: FinalPage): { completed: boolean } | undefined => {
+    finalize: tx((from: LaneName, job: string, page: number, out: FinalPage): { completed: boolean } | undefined => {
       if (s.toDone.run({ job, page, from: `${from}_running` }).changes === 0) return undefined;
       const { watermark, total_pages } = s.watermark.get(job) as { watermark: number; total_pages: number };
       appendEvent(job, 'page', page, { page, stage: 'final', watermark, ...out });
@@ -220,7 +228,7 @@ export function openDb(path: string) {
     finals: (job: string) => s.finals.all(job) as { page: number; data: string }[],
 
     // Deletes finished jobs created before the cutoff (cascades to pages and events); returns their ids.
-    purge: db.transaction((before: number): string[] => {
+    purge: tx((before: number): string[] => {
       const ids = (s.expired.all(before) as { id: string }[]).map((r) => r.id);
       for (const id of ids) s.deleteJob.run(id);
       return ids;

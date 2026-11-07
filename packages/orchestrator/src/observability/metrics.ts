@@ -4,7 +4,6 @@ import type { LaneName } from '../config.js';
 import type { Db } from '../storage/db.js';
 import type { PipelineEvents } from '../pipeline/pipeline.js';
 import type { Lane } from '../pipeline/lane.js';
-import type { Notifier } from '../http/stream.js';
 
 const BREAKER_VALUE = { closed: 0, 'half-open': 1, open: 2 } as const;
 
@@ -19,9 +18,51 @@ function cgroupPeak(): number | undefined {
   }
 }
 
-// Builds the Prometheus registry. Gauges are computed on scrape from live state (no bookkeeping);
-// counters are driven by pipeline events. Default metrics add RSS, heap and event-loop lag.
-export function createMetrics(deps: { db: Db; notifier: Notifier; lanes: () => Record<LaneName, Lane> }) {
+/** One process's metrics as JSON (what travels over IPC to be aggregated). */
+export type MetricsJson = Awaited<ReturnType<client.Registry['getMetricsAsJSON']>>;
+
+/** A scrape: what GET /metrics sends. */
+export interface MetricsText {
+  contentType: string;
+  body: string;
+}
+
+// Renders a registry as Prometheus text.
+export async function render(registry: client.Registry): Promise<MetricsText> {
+  return { contentType: registry.contentType, body: await registry.metrics() };
+}
+
+// Merges scrapes from several processes (the pipeline process and the HTTP workers) into one: counters
+// and RSS add up, event-loop lag max takes the max, as each metric's `aggregator` says (default sum).
+export function aggregate(scrapes: MetricsJson[]): Promise<MetricsText> {
+  return render(client.AggregatorRegistry.aggregate(scrapes));
+}
+
+// Declares the open-SSE-connections gauge on a registry.
+function sseGauge(registry: client.Registry, clients: () => number): void {
+  new client.Gauge({
+    name: 'sse_clients',
+    help: 'Open SSE connections',
+    registers: [registry],
+    // Reads the live connection count.
+    collect() {
+      this.set(clients());
+    },
+  });
+}
+
+// Registry for an HTTP worker process: its own RSS, heap and event-loop lag, plus its SSE connections.
+export function createHttpMetrics(sseClients: () => number): client.Registry {
+  const registry = new client.Registry();
+  client.collectDefaultMetrics({ register: registry });
+  sseGauge(registry, sseClients);
+  return registry;
+}
+
+// Builds the pipeline's Prometheus registry. Gauges are computed on scrape from live state (no bookkeeping);
+// counters are driven by pipeline events. Default metrics add RSS, heap and event-loop lag. `sseClients` is
+// given when this process also serves SSE (single-process mode); HTTP workers report their own.
+export function createMetrics(deps: { db: Db; lanes: () => Record<LaneName, Lane>; sseClients?: () => number }) {
   const registry = new client.Registry();
   client.collectDefaultMetrics({ register: registry });
   const lanes = ['layout', 'vlm'] as const;
@@ -48,19 +89,12 @@ export function createMetrics(deps: { db: Db; notifier: Notifier; lanes: () => R
   laneGauge('dispatch_rate', 'Current adaptive (AIMD) rate, requests/s', (l) => l.bucket.rate);
   laneGauge('breaker_state', 'Circuit breaker: 0 closed, 1 half-open, 2 open', (l) => BREAKER_VALUE[l.breaker.state()]);
 
-  new client.Gauge({
-    name: 'sse_clients',
-    help: 'Open SSE connections',
-    registers: [registry],
-    // Reads the live connection count.
-    collect() {
-      this.set(deps.notifier.clients);
-    },
-  });
+  if (deps.sseClients) sseGauge(registry, deps.sseClients);
   new client.Gauge({
     name: 'container_memory_peak_bytes',
     help: 'cgroup memory.peak (container peak, includes child processes)',
     registers: [registry],
+    aggregator: 'max', // one container: every process reads the same file
     // Reads cgroup memory.peak when running in a container.
     collect() {
       const v = cgroupPeak();

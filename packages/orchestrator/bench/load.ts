@@ -169,7 +169,7 @@ const delta = (lane: string, k: string) => (after && before ? (after[lane]![k] ?
 console.log(`\nLoad benchmark: ${JOBS} jobs, ${TOTAL_PAGES} pages, noise ${NOISE_RPS} rps → ${args.orch}\n`);
 console.log('| Metric | Result | Target |');
 console.log('|---|---|---|');
-console.log(`| Peak RSS (orchestrator process; includes shared file-backed pages of the Node binary) | ${mb(peakRss)} | < 500 MB |`);
+console.log(`| Peak RSS (orchestrator, summed over its processes; counts the Node binary's shared pages once per process) | ${mb(peakRss)} | < 500 MB |`);
 console.log(`| Peak container memory (cgroup, incl. qpdf) | ${mb(peakCgroup)} | < 500 MB |`);
 console.log(`| Max event-loop lag: orchestrator / bench client | ${fmt(peakLoopLag)} / ${fmt(clientLoop.max / 1e6)} | (diagnostic) |`);
 console.log(`| Jobs completed with every page | ${complete.length} / ${JOBS} | ${JOBS} / ${JOBS} |`);

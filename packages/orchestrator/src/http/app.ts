@@ -1,7 +1,7 @@
 import express, { type Express, type NextFunction, type Request, type Response } from 'express';
-import type { Registry } from 'prom-client';
 import type { Config } from '../config.js';
 import { evaluate } from '../eval/evaluate.js';
+import type { MetricsText } from '../observability/metrics.js';
 import { createJobService, type Scheduler } from '../services/job-service.js';
 import type { Db } from '../storage/db.js';
 import { HttpError } from './errors.js';
@@ -15,11 +15,12 @@ export interface AppDeps {
   db: Db;
   scheduler: Scheduler;
   notifier: Notifier;
-  registry?: Registry;
+  /** The Prometheus scrape; in cluster mode it is assembled across processes by the pipeline process. */
+  metrics?: () => Promise<MetricsText>;
 }
 
 // Builds the Express app; server.ts owns the process lifecycle, tests call this directly.
-export function buildApp({ cfg, db, scheduler, notifier, registry }: AppDeps): Express {
+export function buildApp({ cfg, db, scheduler, notifier, metrics }: AppDeps): Express {
   const app = express();
   app.disable('x-powered-by');
   app.set('etag', false);
@@ -46,8 +47,9 @@ export function buildApp({ cfg, db, scheduler, notifier, registry }: AppDeps): E
 
   // Prometheus scrape endpoint.
   app.get('/metrics', async (_req, res) => {
-    if (!registry) throw new HttpError(404, 'not_found');
-    res.set('content-type', registry.contentType).send(await registry.metrics());
+    if (!metrics) throw new HttpError(404, 'not_found');
+    const { contentType, body } = await metrics();
+    res.set('content-type', contentType).send(body);
   });
 
   // Liveness, used by the compose healthcheck.

@@ -1,4 +1,5 @@
 // The one place env vars are read. Every default comes from the assignment spec or plan.md.
+import { availableParallelism } from 'node:os';
 
 export type LaneName = 'layout' | 'vlm';
 
@@ -21,6 +22,8 @@ export interface LaneConfig {
 
 export interface Config {
   port: number;
+  /** HTTP worker processes in front of the pipeline process; 0 runs everything in one process. */
+  httpWorkers: number;
   dataDir: string;
   modelUrl: string;
   qpdfBin: string;
@@ -39,6 +42,13 @@ export interface Config {
   lanes: Record<LaneName, LaneConfig>;
 }
 
+// Up to 4 HTTP workers, leaving a CPU for the pipeline process. A 50-upload burst costs ~2-3 ms of event-loop
+// time per upload; 4 workers bring the serial part from ~150 ms to ~40 ms. More buys little and each worker
+// is another ~50 MB process. Several processes share the port through SO_REUSEPORT, so Linux only.
+function defaultHttpWorkers(): number {
+  return process.platform === 'linux' ? Math.min(4, Math.max(1, availableParallelism() - 1)) : 0;
+}
+
 // Builds the config from env, falling back to spec values; throws on a non-numeric number.
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   // Reads a numeric env var with a default.
@@ -51,6 +61,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   };
   return {
     port: num('PORT', 3000),
+    httpWorkers: num('HTTP_WORKERS', defaultHttpWorkers()),
     dataDir: env.DATA_DIR ?? './data',
     modelUrl: env.MODEL_URL ?? 'http://127.0.0.1:8080',
     qpdfBin: env.QPDF_BIN ?? 'qpdf',

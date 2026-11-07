@@ -19,6 +19,11 @@ export const hasQpdf = (() => {
   }
 })();
 
+// A port for a server started as a child process (which can't report a port-0 choice back easily).
+// 10000-32767 sits below Linux's ephemeral range (32768-60999): a port in that range can be handed to an
+// outgoing connection as its local port between our pick and the bind, failing the bind with EADDRINUSE.
+export const randomPort = () => 10000 + Math.floor(Math.random() * 22000);
+
 // A config pointing at a fresh temp data dir, with test overrides.
 export function testConfig(env: Record<string, string> = {}): Config {
   const dir = mkdtempSync(join(tmpdir(), 'orch-test-'));
@@ -46,7 +51,7 @@ export async function startMock(env: Record<string, string> = {}) {
   const { spawn } = await import('node:child_process');
   const { fileURLToPath } = await import('node:url');
   const script = fileURLToPath(new URL('../../mock-models/src/server.ts', import.meta.url));
-  const port = 20000 + Math.floor(Math.random() * 20000);
+  const port = randomPort();
   const child = spawn(process.execPath, ['--import', 'tsx', script], {
     env: { ...process.env, PORT: String(port), MOCK_SEED: '7', ...env },
     stdio: ['ignore', 'pipe', 'inherit'],

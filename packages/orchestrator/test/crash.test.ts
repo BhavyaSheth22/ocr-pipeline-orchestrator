@@ -6,14 +6,14 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import Database from 'better-sqlite3';
 import { makePdf } from '../bench/make-pdf.js';
-import { cleanup, hasQpdf, QPDF, startMock, testConfig, waitFor } from './helpers.js';
+import { cleanup, hasQpdf, QPDF, randomPort, startMock, testConfig, waitFor } from './helpers.js';
 
 const skip = hasQpdf ? false : 'qpdf not available (set QPDF_BIN)';
 const SERVER = fileURLToPath(new URL('../src/server.ts', import.meta.url));
 
 // Starts the orchestrator as a real child process (so it can be SIGKILLed) and waits for /healthz.
 async function startOrchestrator(env: Record<string, string>): Promise<{ child: ChildProcess; url: string }> {
-  const port = 40000 + Math.floor(Math.random() * 20000);
+  const port = randomPort();
   const child = spawn(process.execPath, ['--import', 'tsx', SERVER], {
     env: { ...process.env, ...env, PORT: String(port), LOG_LEVEL: 'silent' },
     stdio: ['ignore', 'ignore', 'inherit'],
